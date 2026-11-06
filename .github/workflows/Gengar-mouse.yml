@@ -1,0 +1,650 @@
+name: Build Gengar Mouse Pro
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Gerar projeto
+        run: |
+          set -e
+          P=GM
+          K=$P/app/src/main/java/com/gengar/mousepro
+          R=$P/app/src/main/res
+          mkdir -p $K $R/drawable-nodpi $R/drawable $R/values $R/xml $R/mipmap-anydpi-v26
+
+          for i in 1 2 3 4; do
+            if [ -f wallpapers/wp$i.webp ]; then cp wallpapers/wp$i.webp $R/drawable-nodpi/gengar_wp$i.webp
+            else convert -size 720x1280 gradient:'#5B21B6-#12031F' $R/drawable-nodpi/gengar_wp$i.png; fi
+          done
+
+          cat > $P/settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "GengarMousePro"
+          include(":app")
+          EOF
+
+          cat > $P/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          echo "org.gradle.jvmargs=-Xmx2g" > $P/gradle.properties
+
+          cat > $P/app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.gengar.mousepro"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.gengar.mousepro"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+
+          cat > $P/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
+                  android:theme="@style/Theme.GM"
+                  android:allowBackup="false">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".MapperService"
+                      android:exported="false"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > $R/xml/accessibility_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:notificationTimeout="500"
+              android:description="@string/service_desc" />
+          EOF
+
+          cat > $R/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">Gengar Mouse Pro</string>
+              <string name="service_desc">Usado somente para converter teclado e mouse em toques na tela. Nenhum dado é coletado e o app não usa internet.</string>
+          </resources>
+          EOF
+
+          cat > $R/values/colors.xml <<'EOF'
+          <resources>
+              <color name="gm_bg">#12031F</color>
+          </resources>
+          EOF
+
+          cat > $R/values/themes.xml <<'EOF'
+          <resources>
+              <style name="Theme.GM" parent="@android:style/Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@color/gm_bg</item>
+                  <item name="android:statusBarColor">@color/gm_bg</item>
+                  <item name="android:navigationBarColor">@color/gm_bg</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > $R/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/gm_bg"/>
+              <foreground android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
+          EOF
+
+          cat > $R/drawable/ic_fg.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#5B21B6" android:pathData="M30,34 L40,24 L46,36 L62,36 L68,24 L78,34 L78,74 L30,74 Z"/>
+              <path android:fillColor="#F43F9A" android:pathData="M36,46 L50,52 L36,56 Z"/>
+              <path android:fillColor="#F43F9A" android:pathData="M72,46 L58,52 L72,56 Z"/>
+              <path android:fillColor="#FFFFFF" android:pathData="M34,62 Q54,84 74,62 Q54,70 34,62 Z"/>
+          </vector>
+          EOF
+
+          cat > $K/Config.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.content.Context
+          import android.view.KeyEvent
+
+          data class Act(val id: String, val label: String, val key: Int, val fx: Float, val fy: Float)
+
+          object Config {
+              val acts = listOf(
+                  Act("JOY", "Mover WASD", 0, 0.16f, 0.70f),
+                  Act("CAM", "Câmera", 0, 0.72f, 0.50f),
+                  Act("FIRE", "Atirar", 0, 0.88f, 0.62f),
+                  Act("SCOPE", "Mirar", 0, 0.80f, 0.42f),
+                  Act("JUMP", "Pular", KeyEvent.KEYCODE_SPACE, 0.94f, 0.78f),
+                  Act("CROUCH", "Agachar C", KeyEvent.KEYCODE_C, 0.90f, 0.90f),
+                  Act("RELOAD", "Recarregar R", KeyEvent.KEYCODE_R, 0.72f, 0.88f),
+                  Act("USE", "Interagir F", KeyEvent.KEYCODE_F, 0.62f, 0.62f),
+                  Act("W1", "Arma 1", KeyEvent.KEYCODE_1, 0.58f, 0.92f),
+                  Act("W2", "Arma 2", KeyEvent.KEYCODE_2, 0.66f, 0.92f),
+                  Act("NADE", "Granada G", KeyEvent.KEYCODE_G, 0.50f, 0.80f),
+                  Act("HEAL", "Curar H", KeyEvent.KEYCODE_H, 0.50f, 0.65f)
+              )
+
+              private fun p(c: Context) = c.getSharedPreferences("gmp", Context.MODE_PRIVATE)
+
+              fun pos(c: Context, a: Act): Pair<Float, Float> {
+                  val s = p(c).getString("pos_" + a.id, null) ?: return a.fx to a.fy
+                  val t = s.split(",")
+                  return t[0].toFloat() to t[1].toFloat()
+              }
+              fun setPos(c: Context, id: String, fx: Float, fy: Float) {
+                  p(c).edit().putString("pos_$id", "$fx,$fy").apply()
+              }
+              fun sens(c: Context) = p(c).getFloat("sens", 1.0f)
+              fun setSens(c: Context, v: Float) = p(c).edit().putFloat("sens", v).apply()
+              fun smooth(c: Context) = p(c).getFloat("smooth", 0.6f)
+              fun setSmooth(c: Context, v: Float) = p(c).edit().putFloat("smooth", v).apply()
+              fun wp(c: Context) = p(c).getInt("wp", 2)
+              fun setWp(c: Context, v: Int) = p(c).edit().putInt("wp", v).apply()
+          }
+          EOF
+
+          cat > $K/MapperService.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.accessibilityservice.GestureDescription.StrokeDescription
+          import android.graphics.Path
+          import android.graphics.PixelFormat
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import kotlin.math.abs
+          import kotlin.math.hypot
+          import kotlin.math.min
+
+          class MapperService : AccessibilityService() {
+              companion object {
+                  var instance: MapperService? = null
+                  private const val TICK = 32L
+              }
+
+              private class Ch { var stroke: StrokeDescription? = null; var x = 0f; var y = 0f }
+
+              private val handler = Handler(Looper.getMainLooper())
+              private val joy = Ch(); private val cam = Ch(); private val fire = Ch(); private val scope = Ch()
+              private val taps = ArrayDeque<Pair<Float, Float>>()
+              private var wm: WindowManager? = null
+              private var overlay: OverlayView? = null
+              private var running = false
+              private var camIdle = 0
+              private var weaponToggle = false
+
+              var dirX = 0; var dirY = 0
+              var fireDown = false; var scopeDown = false
+              private var pendX = 0f; private var pendY = 0f
+
+              val isRunning get() = running
+              private val sw get() = resources.displayMetrics.widthPixels.toFloat()
+              private val sh get() = resources.displayMetrics.heightPixels.toFloat()
+
+              override fun onServiceConnected() { instance = this }
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+              override fun onDestroy() { stop(); instance = null; super.onDestroy() }
+
+              fun start() {
+                  if (overlay != null) return
+                  val v = OverlayView(this, this)
+                  overlay = v
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  wm!!.addView(v, params(false))
+                  running = true
+                  v.setCapture(true)
+                  handler.post(tickRunnable)
+              }
+
+              fun stop() {
+                  running = false
+                  handler.removeCallbacks(tickRunnable)
+                  overlay?.let { it.setCapture(false); try { wm?.removeView(it) } catch (_: Exception) {} }
+                  overlay = null
+                  dirX = 0; dirY = 0; fireDown = false; scopeDown = false; pendX = 0f; pendY = 0f
+                  flushRelease()
+              }
+
+              fun setEdit(on: Boolean) {
+                  val v = overlay ?: return
+                  v.edit = on
+                  v.setCapture(!on)
+                  wm?.updateViewLayout(v, params(on))
+                  v.invalidate()
+              }
+
+              private fun params(touchable: Boolean): WindowManager.LayoutParams {
+                  var f = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                  if (!touchable) f = f or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                  return WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, f, PixelFormat.TRANSLUCENT
+                  )
+              }
+
+              fun addDelta(dx: Float, dy: Float) { pendX += dx; pendY += dy }
+              fun tap(id: String) { if (taps.size < 6) taps.addLast(px(id)) }
+              fun cycleWeapon() { weaponToggle = !weaponToggle; tap(if (weaponToggle) "W2" else "W1") }
+
+              private fun px(id: String): Pair<Float, Float> {
+                  val a = Config.acts.first { it.id == id }
+                  val (fx, fy) = Config.pos(this, a)
+                  return fx * sw to fy * sh
+              }
+
+              private val tickRunnable = Runnable { tick() }
+
+              private fun tick() {
+                  if (!running) return
+                  val strokes = ArrayList<StrokeDescription>()
+
+                  val j = px("JOY")
+                  if (dirX != 0 || dirY != 0) {
+                      val r = min(sw, sh) * 0.09f
+                      val n = hypot(dirX.toFloat(), dirY.toFloat())
+                      strokes += move(joy, j.first, j.second, j.first + dirX / n * r, j.second + dirY / n * r)
+                  } else if (joy.stroke != null) strokes += release(joy)
+
+                  val c = px("CAM")
+                  if (abs(pendX) > 0.5f || abs(pendY) > 0.5f) {
+                      camIdle = 0
+                      val k = Config.smooth(this)
+                      val dx = pendX * k; val dy = pendY * k
+                      pendX -= dx; pendY -= dy
+                      val s = Config.sens(this)
+                      val fromX = if (cam.stroke == null) c.first else cam.x
+                      val fromY = if (cam.stroke == null) c.second else cam.y
+                      val tx = fromX + dx * s; val ty = fromY + dy * s
+                      if (tx < sw * 0.45f || tx > sw * 0.97f || ty < sh * 0.1f || ty > sh * 0.9f) {
+                          if (cam.stroke != null) strokes += release(cam)
+                          pendX += dx; pendY += dy
+                      } else strokes += move(cam, c.first, c.second, tx, ty)
+                  } else if (cam.stroke != null) {
+                      camIdle++
+                      strokes += if (camIdle > 3) release(cam) else hold(cam, cam.x, cam.y)
+                  }
+
+                  if (fireDown) { val f = px("FIRE"); strokes += hold(fire, f.first, f.second) }
+                  else if (fire.stroke != null) strokes += release(fire)
+                  if (scopeDown) { val f = px("SCOPE"); strokes += hold(scope, f.first, f.second) }
+                  else if (scope.stroke != null) strokes += release(scope)
+
+                  val tapStrokes = ArrayList<StrokeDescription>()
+                  while (taps.isNotEmpty() && strokes.size + tapStrokes.size < 18) {
+                      val t = taps.removeFirst()
+                      val p = Path().apply { moveTo(t.first, t.second) }
+                      tapStrokes += StrokeDescription(p, 0, TICK)
+                  }
+
+                  if (strokes.isEmpty() && tapStrokes.isEmpty()) {
+                      handler.postDelayed(tickRunnable, TICK); return
+                  }
+                  val b = GestureDescription.Builder()
+                  strokes.forEach { b.addStroke(it) }
+                  tapStrokes.forEach { b.addStroke(it) }
+                  val ok = dispatchGesture(b.build(), object : GestureResultCallback() {
+                      override fun onCompleted(g: GestureDescription?) { handler.post(tickRunnable) }
+                      override fun onCancelled(g: GestureDescription?) { resetAll(); handler.post(tickRunnable) }
+                  }, null)
+                  if (!ok) { resetAll(); handler.postDelayed(tickRunnable, TICK) }
+              }
+
+              private fun move(ch: Ch, sx: Float, sy: Float, tx: Float, ty: Float): StrokeDescription {
+                  val p = Path()
+                  val prev = ch.stroke
+                  val s = if (prev == null) {
+                      p.moveTo(sx, sy); p.lineTo(tx, ty)
+                      StrokeDescription(p, 0, TICK, true)
+                  } else {
+                      p.moveTo(ch.x, ch.y); p.lineTo(tx, ty)
+                      prev.continueStroke(p, 0, TICK, true)
+                  }
+                  ch.stroke = s; ch.x = tx; ch.y = ty
+                  return s
+              }
+
+              private fun hold(ch: Ch, x: Float, y: Float): StrokeDescription {
+                  val p = Path()
+                  val prev = ch.stroke
+                  val s = if (prev == null) {
+                      ch.x = x; ch.y = y
+                      p.moveTo(x, y); StrokeDescription(p, 0, TICK, true)
+                  } else {
+                      p.moveTo(ch.x, ch.y); prev.continueStroke(p, 0, TICK, true)
+                  }
+                  ch.stroke = s
+                  return s
+              }
+
+              private fun release(ch: Ch): StrokeDescription {
+                  val p = Path().apply { moveTo(ch.x, ch.y) }
+                  val s = ch.stroke!!.continueStroke(p, 0, 1, false)
+                  ch.stroke = null
+                  return s
+              }
+
+              private fun resetAll() { joy.stroke = null; cam.stroke = null; fire.stroke = null; scope.stroke = null }
+
+              private fun flushRelease() {
+                  val list = ArrayList<StrokeDescription>()
+                  for (ch in listOf(joy, cam, fire, scope)) if (ch.stroke != null) list += release(ch)
+                  if (list.isEmpty()) return
+                  val b = GestureDescription.Builder()
+                  list.forEach { b.addStroke(it) }
+                  dispatchGesture(b.build(), null, null)
+              }
+          }
+          EOF
+
+          cat > $K/OverlayView.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.RectF
+          import android.view.KeyEvent
+          import android.view.MotionEvent
+          import android.view.View
+          import kotlin.math.hypot
+
+          class OverlayView(ctx: Context, private val svc: MapperService) : View(ctx) {
+              var edit = false
+              private var wantCapture = false
+              private val down = HashSet<Int>()
+              private val d = resources.displayMetrics.density
+              private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val live = HashMap<String, Pair<Float, Float>>()
+              private var drag: String? = null
+              private val okRect get() = RectF(width / 2f - 70 * d, 16 * d, width / 2f + 70 * d, 60 * d)
+
+              init { isFocusable = true; isFocusableInTouchMode = true }
+
+              fun setCapture(on: Boolean) {
+                  wantCapture = on
+                  if (on) { requestFocus(); requestPointerCapture() } else releasePointerCapture()
+                  invalidate()
+              }
+
+              override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+                  super.onWindowFocusChanged(hasWindowFocus)
+                  if (hasWindowFocus && wantCapture) { requestFocus(); requestPointerCapture() }
+              }
+              override fun onPointerCaptureChange(hasCapture: Boolean) { invalidate() }
+
+              private fun recalcDir() {
+                  svc.dirX = (if (KeyEvent.KEYCODE_D in down) 1 else 0) - (if (KeyEvent.KEYCODE_A in down) 1 else 0)
+                  svc.dirY = (if (KeyEvent.KEYCODE_S in down) 1 else 0) - (if (KeyEvent.KEYCODE_W in down) 1 else 0)
+              }
+
+              override fun onKeyDown(code: Int, e: KeyEvent): Boolean {
+                  if (edit) return super.onKeyDown(code, e)
+                  if (code == KeyEvent.KEYCODE_ESCAPE) {
+                      if (e.repeatCount == 0) setCapture(!hasPointerCapture()); return true
+                  }
+                  when (code) {
+                      KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D -> {
+                          down += code; recalcDir(); return true
+                      }
+                  }
+                  val act = Config.acts.firstOrNull { it.key == code }
+                  if (act != null) { if (e.repeatCount == 0) svc.tap(act.id); return true }
+                  return super.onKeyDown(code, e)
+              }
+
+              override fun onKeyUp(code: Int, e: KeyEvent): Boolean {
+                  if (down.remove(code)) { recalcDir(); return true }
+                  return super.onKeyUp(code, e)
+              }
+
+              override fun onCapturedPointerEvent(e: MotionEvent): Boolean {
+                  svc.fireDown = (e.buttonState and MotionEvent.BUTTON_PRIMARY) != 0
+                  svc.scopeDown = (e.buttonState and MotionEvent.BUTTON_SECONDARY) != 0
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_MOVE -> svc.addDelta(e.x, e.y)
+                      MotionEvent.ACTION_SCROLL -> if (e.getAxisValue(MotionEvent.AXIS_VSCROLL) != 0f) svc.cycleWeapon()
+                  }
+                  return true
+              }
+
+              override fun onDraw(c: Canvas) {
+                  if (edit) {
+                      c.drawColor(Color.argb(150, 10, 0, 25))
+                      for (a in Config.acts) {
+                          val (fx, fy) = live[a.id] ?: Config.pos(context, a)
+                          val x = fx * width; val y = fy * height
+                          paint.style = Paint.Style.FILL; paint.color = Color.argb(190, 124, 58, 237)
+                          c.drawCircle(x, y, 30 * d, paint)
+                          paint.style = Paint.Style.STROKE; paint.strokeWidth = 3 * d; paint.color = Color.rgb(244, 63, 154)
+                          c.drawCircle(x, y, 30 * d, paint)
+                          paint.style = Paint.Style.FILL; paint.color = Color.WHITE
+                          paint.textSize = 11 * d; paint.textAlign = Paint.Align.CENTER
+                          c.drawText(a.label, x, y + 4 * d, paint)
+                      }
+                      paint.style = Paint.Style.FILL; paint.color = Color.rgb(244, 63, 154)
+                      c.drawRoundRect(okRect, 20 * d, 20 * d, paint)
+                      paint.color = Color.WHITE; paint.textSize = 16 * d
+                      c.drawText("CONCLUIR", width / 2f, 45 * d, paint)
+                  } else if (hasPointerCapture()) {
+                      paint.style = Paint.Style.FILL; paint.color = Color.rgb(244, 63, 154)
+                      c.drawCircle(14 * d, 14 * d, 4 * d, paint)
+                  }
+              }
+
+              private fun nearest(x: Float, y: Float): String? {
+                  val a = Config.acts.minByOrNull {
+                      val (fx, fy) = live[it.id] ?: Config.pos(context, it)
+                      hypot(fx * width - x, fy * height - y)
+                  } ?: return null
+                  val (fx, fy) = live[a.id] ?: Config.pos(context, a)
+                  return if (hypot(fx * width - x, fy * height - y) < 50 * d) a.id else null
+              }
+
+              override fun onTouchEvent(e: MotionEvent): Boolean {
+                  if (!edit) return false
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          if (okRect.contains(e.x, e.y)) { svc.setEdit(false); return true }
+                          drag = nearest(e.x, e.y)
+                      }
+                      MotionEvent.ACTION_MOVE -> drag?.let {
+                          live[it] = (e.x / width).coerceIn(0f, 1f) to (e.y / height).coerceIn(0f, 1f); invalidate()
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          drag?.let { id -> live[id]?.let { Config.setPos(context, id, it.first, it.second) } }
+                          drag = null
+                      }
+                  }
+                  return true
+              }
+          }
+          EOF
+
+          cat > $K/MainActivity.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.res.ColorStateList
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+          import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+          import android.widget.*
+
+          class MainActivity : Activity() {
+              private lateinit var bg: ImageView
+              private lateinit var status: TextView
+              private val wps = intArrayOf(R.drawable.gengar_wp1, R.drawable.gengar_wp2, R.drawable.gengar_wp3, R.drawable.gengar_wp4)
+              private val pink = Color.rgb(244, 63, 154)
+              private val purple = Color.rgb(124, 58, 237)
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val root = FrameLayout(this)
+                  bg = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                  root.addView(bg, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+                  root.addView(View(this).apply { setBackgroundColor(Color.argb(150, 0, 0, 0)) },
+                      FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(22), dp(36), dp(22), dp(24))
+                  }
+                  col.addView(TextView(this).apply {
+                      text = "GENGAR MOUSE PRO"; textSize = 26f; setTextColor(pink)
+                      typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                  })
+                  status = TextView(this).apply {
+                      textSize = 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                      setPadding(0, dp(8), 0, dp(16))
+                  }
+                  col.addView(status)
+
+                  col.addView(btn("Ativar serviço de acessibilidade") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  })
+                  col.addView(btn("▶  Iniciar mapeador") {
+                      val s = MapperService.instance
+                      if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
+                          s.start(); refresh(); moveTaskToBack(true)
+                          toast("Abra o jogo. ESC solta/pega o mouse")
+                      }
+                  })
+                  col.addView(btn("✎  Editar posições dos botões") {
+                      val s = MapperService.instance
+                      if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
+                          s.start(); s.setEdit(true); moveTaskToBack(true)
+                          toast("Abra o jogo, arraste os botões e toque CONCLUIR")
+                      }
+                  })
+                  col.addView(btn("■  Parar") { MapperService.instance?.stop(); refresh() })
+
+                  col.addView(label("Sensibilidade do mouse"))
+                  col.addView(SeekBar(this).apply {
+                      max = 27; progress = ((Config.sens(this@MainActivity) * 10) - 3).toInt()
+                      tint(this)
+                      setOnSeekBarChangeListener(sb { Config.setSens(this@MainActivity, (it + 3) / 10f) })
+                  })
+                  col.addView(label("Suavização da mira (maior = mais direto, menor = mais estável)"))
+                  col.addView(SeekBar(this).apply {
+                      max = 7; progress = ((Config.smooth(this@MainActivity) * 10) - 3).toInt()
+                      tint(this)
+                      setOnSeekBarChangeListener(sb { Config.setSmooth(this@MainActivity, (it + 3) / 10f) })
+                  })
+
+                  col.addView(label("Wallpaper"))
+                  val row = LinearLayout(this)
+                  for (i in wps.indices) {
+                      val lp = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, dp(4), 0) }
+                      row.addView(btn("${i + 1}", lp) { Config.setWp(this, i); bg.setImageResource(wps[i]) })
+                  }
+                  col.addView(row)
+
+                  col.addView(TextView(this).apply {
+                      text = "Teclas: WASD move · Espaço pula · C agacha · R recarrega · F interage · 1/2 armas · G granada · H curar · " +
+                              "botão esquerdo atira · direito mira · scroll troca arma · ESC solta o mouse."
+                      textSize = 12f; setTextColor(Color.LTGRAY); setPadding(0, dp(16), 0, 0)
+                  })
+
+                  root.addView(ScrollView(this).apply { addView(col) })
+                  setContentView(root)
+                  bg.setImageResource(wps[Config.wp(this).coerceIn(0, 3)])
+              }
+
+              override fun onResume() { super.onResume(); refresh() }
+
+              private fun refresh() {
+                  val s = MapperService.instance
+                  status.text = when {
+                      s == null -> "⚠ Serviço desativado — ative em Acessibilidade"
+                      s.isRunning -> "● Mapeador ATIVO"
+                      else -> "Pronto"
+                  }
+              }
+
+              private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
+              private fun label(t: String) = TextView(this).apply {
+                  text = t; textSize = 13f; setTextColor(Color.WHITE); setPadding(0, dp(14), 0, dp(4))
+              }
+              private fun tint(s: SeekBar) {
+                  s.progressTintList = ColorStateList.valueOf(pink)
+                  s.thumbTintList = ColorStateList.valueOf(pink)
+              }
+              private fun sb(f: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+                  override fun onProgressChanged(s: SeekBar, p: Int, u: Boolean) { if (u) f(p) }
+                  override fun onStartTrackingTouch(s: SeekBar) {}
+                  override fun onStopTrackingTouch(s: SeekBar) {}
+              }
+              private fun btn(t: String, lp: LinearLayout.LayoutParams? = null, onClick: () -> Unit) = Button(this).apply {
+                  text = t; setTextColor(Color.WHITE); isAllCaps = false
+                  background = GradientDrawable().apply {
+                      setColor(Color.argb(210, 60, 20, 110)); cornerRadius = dp(14).toFloat(); setStroke(dp(2), purple)
+                  }
+                  layoutParams = lp ?: LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { setMargins(0, dp(6), 0, dp(6)) }
+                  setOnClickListener { onClick() }
+              }
+          }
+          EOF
+
+      - name: Compilar APK
+        working-directory: GM
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GengarMousePro-apk
+          path: GM/app/build/outputs/apk/debug/*.apk
