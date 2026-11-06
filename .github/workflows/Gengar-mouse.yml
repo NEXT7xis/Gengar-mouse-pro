@@ -1,4 +1,4 @@
-name: Build Gengar Mouse Pro
+name: Build Gengar Mouse Shizuku
 on:
   push:
   workflow_dispatch:
@@ -22,10 +22,11 @@ jobs:
           P=GM
           K=$P/app/src/main/java/com/gengar/mousepro
           R=$P/app/src/main/res
-          mkdir -p $K $R/drawable-nodpi $R/drawable $R/values $R/xml $R/mipmap-anydpi-v26
+          mkdir -p $K $R/drawable-nodpi $R/drawable $R/values $R/mipmap-anydpi-v26
 
           for i in 1 2 3 4; do
-            if [ -f wallpapers/wp$i.webp ]; then cp wallpapers/wp$i.webp $R/drawable-nodpi/gengar_wp$i.webp
+            f=$(ls wallpapers/wp$i.* 2>/dev/null | head -n 1 || true)
+            if [ -n "$f" ]; then cp "$f" "$R/drawable-nodpi/gengar_wp$i.${f##*.}"
             else convert -size 720x1280 gradient:'#5B21B6-#12031F' $R/drawable-nodpi/gengar_wp$i.png; fi
           done
 
@@ -43,7 +44,10 @@ jobs:
           }
           EOF
 
-          echo "org.gradle.jvmargs=-Xmx2g" > $P/gradle.properties
+          cat > $P/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF
 
           cat > $P/app/build.gradle.kts <<'EOF'
           plugins {
@@ -57,17 +61,25 @@ jobs:
                   applicationId = "com.gengar.mousepro"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 3
+                  versionName = "3.0"
               }
               compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
               kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("dev.rikka.shizuku:api:13.1.5")
+              implementation("dev.rikka.shizuku:provider:13.1.5")
           }
           EOF
 
           cat > $P/app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
               <application
                   android:label="@string/app_name"
                   android:icon="@mipmap/ic_launcher"
@@ -82,31 +94,25 @@ jobs:
                   <service
                       android:name=".MapperService"
                       android:exported="false"
-                      android:label="@string/app_name"
-                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-                      <intent-filter>
-                          <action android:name="android.accessibilityservice.AccessibilityService" />
-                      </intent-filter>
-                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="input_mapper" />
                   </service>
+                  <provider
+                      android:name="rikka.shizuku.ShizukuProvider"
+                      android:authorities="${applicationId}.shizuku"
+                      android:multiprocess="false"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
               </application>
           </manifest>
-          EOF
-
-          cat > $R/xml/accessibility_config.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-              android:accessibilityEventTypes="typeWindowStateChanged"
-              android:accessibilityFeedbackType="feedbackGeneric"
-              android:canPerformGestures="true"
-              android:notificationTimeout="500"
-              android:description="@string/service_desc" />
           EOF
 
           cat > $R/values/strings.xml <<'EOF'
           <resources>
               <string name="app_name">Gengar Mouse Pro</string>
-              <string name="service_desc">Usado somente para converter teclado e mouse em toques na tela. Nenhum dado é coletado e o app não usa internet.</string>
           </resources>
           EOF
 
@@ -151,6 +157,7 @@ jobs:
           import android.view.KeyEvent
           import org.json.JSONArray
           import org.json.JSONObject
+          import java.util.UUID
 
           object Config {
               const val TAP = 0
@@ -194,13 +201,33 @@ jobs:
                   else -> KeyEvent.keyCodeToString(c).removePrefix("KEYCODE_")
               }
 
-              private fun prefs(c: Context) = c.getSharedPreferences("gmp2", Context.MODE_PRIVATE)
+              private fun prefs(c: Context) = c.getSharedPreferences("gmp3", Context.MODE_PRIVATE)
+
+              fun token(c: Context): String {
+                  val p = prefs(c)
+                  val t = p.getString("token", null)
+                  if (t != null) return t
+                  val n = UUID.randomUUID().toString().replace("-", "")
+                  p.edit().putString("token", n).apply()
+                  return n
+              }
 
               fun profile(c: Context) = prefs(c).getInt("profile", 0)
               fun setProfile(c: Context, v: Int) = prefs(c).edit().putInt("profile", v).apply()
 
-              fun load(c: Context, p: Int = profile(c)): MutableList<Btn> {
-                  val s = prefs(c).getString("p$p", null) ?: return defaults()
+              fun toJson(list: List<Btn>): String {
+                  val a = JSONArray()
+                  for (b in list) {
+                      val o = JSONObject()
+                      o.put("id", b.id); o.put("t", b.type); o.put("l", b.label); o.put("k", b.key)
+                      o.put("x", b.x.toDouble()); o.put("y", b.y.toDouble()); o.put("r", b.r.toDouble())
+                      o.put("ks", JSONArray(b.ks.toList()))
+                      a.put(o)
+                  }
+                  return a.toString()
+              }
+
+              fun fromJson(s: String): MutableList<Btn>? {
                   return try {
                       val a = JSONArray(s)
                       val out = mutableListOf<Btn>()
@@ -213,28 +240,25 @@ jobs:
                               IntArray(4) { ka.getInt(it) }
                           ))
                       }
-                      out
-                  } catch (e: Exception) { defaults() }
+                      if (out.isEmpty()) null else out
+                  } catch (e: Exception) { null }
+              }
+
+              fun load(c: Context, p: Int = profile(c)): MutableList<Btn> {
+                  val s = prefs(c).getString("p$p", null) ?: return defaults()
+                  return fromJson(s) ?: defaults()
               }
 
               fun save(c: Context, list: List<Btn>, p: Int = profile(c)) {
-                  val a = JSONArray()
-                  for (b in list) {
-                      val o = JSONObject()
-                      o.put("id", b.id); o.put("t", b.type); o.put("l", b.label); o.put("k", b.key)
-                      o.put("x", b.x.toDouble()); o.put("y", b.y.toDouble()); o.put("r", b.r.toDouble())
-                      o.put("ks", JSONArray(b.ks.toList()))
-                      a.put(o)
-                  }
-                  prefs(c).edit().putString("p$p", a.toString()).apply()
+                  prefs(c).edit().putString("p$p", toJson(list)).apply()
               }
 
-              fun sensX(c: Context) = prefs(c).getFloat("sx", 1.0f)
+              fun sensX(c: Context) = prefs(c).getFloat("sx", 1.5f)
               fun setSensX(c: Context, v: Float) = prefs(c).edit().putFloat("sx", v).apply()
-              fun sensY(c: Context) = prefs(c).getFloat("sy", 1.0f)
+              fun sensY(c: Context) = prefs(c).getFloat("sy", 1.5f)
               fun setSensY(c: Context, v: Float) = prefs(c).edit().putFloat("sy", v).apply()
-              fun smooth(c: Context) = prefs(c).getFloat("smooth", 0.6f)
-              fun setSmooth(c: Context, v: Float) = prefs(c).edit().putFloat("smooth", v).apply()
+              fun fireMul(c: Context) = prefs(c).getFloat("fm", 1.0f)
+              fun setFireMul(c: Context, v: Float) = prefs(c).edit().putFloat("fm", v).apply()
               fun capKey(c: Context) = prefs(c).getInt("cap", KeyEvent.KEYCODE_ESCAPE)
               fun setCapKey(c: Context, v: Int) = prefs(c).edit().putInt("cap", v).apply()
               fun wp(c: Context) = prefs(c).getInt("wp", 2)
@@ -242,80 +266,356 @@ jobs:
           }
           EOF
 
+          cat > $K/Client.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.content.Context
+          import android.os.Handler
+          import android.os.Looper
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.OutputStream
+          import java.net.InetSocketAddress
+          import java.net.Socket
+          import java.util.concurrent.Executors
+
+          // Fala com o servidor shell (Shizuku ou ADB) por socket local 127.0.0.1
+          object Client {
+              const val PORT = 38921
+              @Volatile var connected = false
+              private val io = Executors.newSingleThreadExecutor()
+              private val main = Handler(Looper.getMainLooper())
+              private var sock: Socket? = null
+              private var out: OutputStream? = null
+
+              fun connect(c: Context, done: ((Boolean) -> Unit)? = null) {
+                  val token = Config.token(c)
+                  io.execute {
+                      var ok = false
+                      try {
+                          closeNow()
+                          val s = Socket()
+                          s.tcpNoDelay = true
+                          s.connect(InetSocketAddress("127.0.0.1", PORT), 600)
+                          s.soTimeout = 1500
+                          val o = s.getOutputStream()
+                          o.write(("HELLO " + token + "\n").toByteArray()); o.flush()
+                          val ans = BufferedReader(InputStreamReader(s.getInputStream())).readLine()
+                          if (ans == "OK") { s.soTimeout = 0; sock = s; out = o; ok = true } else s.close()
+                      } catch (e: Exception) { }
+                      connected = ok
+                      if (done != null) main.post { done(ok) }
+                  }
+              }
+
+              fun send(line: String) {
+                  if (!connected) return
+                  io.execute {
+                      try {
+                          val o = out
+                          if (o != null) { o.write((line + "\n").toByteArray()); o.flush() }
+                      } catch (e: Exception) { connected = false }
+                  }
+              }
+
+              fun quit() {
+                  send("QUIT")
+                  io.execute { closeNow() }
+              }
+
+              private fun closeNow() {
+                  try { sock?.close() } catch (e: Exception) { }
+                  sock = null; out = null; connected = false
+              }
+          }
+          EOF
+
+          cat > $K/ShellServer.kt <<'EOF'
+          package com.gengar.mousepro
+
+          import android.os.Binder
+          import android.os.Parcel
+          import android.os.SystemClock
+          import android.view.InputDevice
+          import android.view.InputEvent
+          import android.view.MotionEvent
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.lang.reflect.Method
+          import java.net.InetAddress
+          import java.net.InetSocketAddress
+          import java.net.ServerSocket
+          import java.net.Socket
+          import kotlin.system.exitProcess
+
+          // Roda como shell (uid 2000): via Shizuku (UserService) ou via adb + app_process.
+          class ShellServer : Binder() {
+              override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+                  if (code == 1) {
+                      Server.start(data.readString() ?: "")
+                      reply?.writeNoException()
+                      return true
+                  }
+                  return super.onTransact(code, data, reply, flags)
+              }
+          }
+
+          object Server {
+              private var ss: ServerSocket? = null
+
+              @JvmStatic
+              fun main(args: Array<String>) {
+                  val token = if (args.isNotEmpty()) args[0] else ""
+                  if (token.isEmpty() || !start(token)) exitProcess(1)
+                  while (true) Thread.sleep(60000)
+              }
+
+              @Synchronized
+              fun start(token: String): Boolean {
+                  if (ss != null) return true
+                  if (token.isEmpty()) return false
+                  val sock = try {
+                      ServerSocket().apply {
+                          reuseAddress = true
+                          bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), Client.PORT))
+                      }
+                  } catch (e: Exception) { return false }
+                  ss = sock
+                  Thread {
+                      val inj = try { Injector() } catch (e: Throwable) { null }
+                      while (true) {
+                          try {
+                              val s = sock.accept()
+                              handle(s, token, inj)
+                          } catch (e: Exception) { }
+                      }
+                  }.start()
+                  return true
+              }
+
+              private fun handle(s: Socket, token: String, inj: Injector?) {
+                  try {
+                      s.tcpNoDelay = true
+                      val r = BufferedReader(InputStreamReader(s.getInputStream()))
+                      val o = s.getOutputStream()
+                      val hello = r.readLine() ?: return
+                      if (hello != "HELLO " + token || inj == null) {
+                          o.write("NO\n".toByteArray()); o.flush(); return
+                      }
+                      o.write("OK\n".toByteArray()); o.flush()
+                      while (true) {
+                          val line = r.readLine() ?: break
+                          val p = line.split(' ')
+                          try {
+                              when (p[0]) {
+                                  "D" -> inj.down(p[1].toInt(), p[2].toFloat(), p[3].toFloat())
+                                  "M" -> inj.move(p[1].toInt(), p[2].toFloat(), p[3].toFloat())
+                                  "U" -> inj.up(p[1].toInt())
+                                  "QUIT" -> { inj.releaseAll(); exitProcess(0) }
+                              }
+                          } catch (e: NumberFormatException) { } catch (e: IndexOutOfBoundsException) { }
+                      }
+                  } catch (e: Exception) {
+                  } finally {
+                      inj?.releaseAll()
+                      try { s.close() } catch (e: Exception) { }
+                  }
+              }
+          }
+
+          // Injeta toques multi-dedo reais (MotionEvent) pelo InputManager
+          class Injector {
+              private val target: Any
+              private val method: Method
+              private val argc: Int
+              private val setDisplay: Method? = try {
+                  InputEvent::class.java.getMethod("setDisplayId", Integer.TYPE)
+              } catch (e: Throwable) { null }
+              private val ids = ArrayList<Int>()
+              private val px = HashMap<Int, Float>()
+              private val py = HashMap<Int, Float>()
+              private var downTime = 0L
+
+              init {
+                  var t: Any? = null
+                  try {
+                      t = Class.forName("android.hardware.input.InputManagerGlobal").getMethod("getInstance").invoke(null)
+                  } catch (e: Throwable) { }
+                  if (t == null) {
+                      t = Class.forName("android.hardware.input.InputManager").getMethod("getInstance").invoke(null)
+                  }
+                  target = t!!
+                  method = target.javaClass.methods.first {
+                      it.name == "injectInputEvent" && (it.parameterTypes.size == 2 || it.parameterTypes.size == 3)
+                  }
+                  argc = method.parameterTypes.size
+              }
+
+              private fun inject(ev: MotionEvent) {
+                  try { setDisplay?.invoke(ev, 0) } catch (e: Throwable) { }
+                  try {
+                      if (argc == 3) method.invoke(target, ev, 0, -1) else method.invoke(target, ev, 0)
+                  } catch (e: Throwable) { }
+              }
+
+              private fun send(action: Int, now: Long) {
+                  val n = ids.size
+                  val props = Array(n) { i ->
+                      MotionEvent.PointerProperties().also { p -> p.id = ids[i]; p.toolType = MotionEvent.TOOL_TYPE_FINGER }
+                  }
+                  val cs = Array(n) { i ->
+                      MotionEvent.PointerCoords().also { c ->
+                          c.x = px[ids[i]] ?: 0f; c.y = py[ids[i]] ?: 0f; c.pressure = 1f; c.size = 1f
+                      }
+                  }
+                  val ev = MotionEvent.obtain(downTime, now, action, n, props, cs, 0, 0, 1f, 1f, 0, 0,
+                      InputDevice.SOURCE_TOUCHSCREEN, 0)
+                  inject(ev)
+                  ev.recycle()
+              }
+
+              @Synchronized fun down(id: Int, x: Float, y: Float) {
+                  if (ids.contains(id)) { move(id, x, y); return }
+                  px[id] = x; py[id] = y
+                  val now = SystemClock.uptimeMillis()
+                  if (ids.isEmpty()) {
+                      downTime = now; ids.add(id); send(MotionEvent.ACTION_DOWN, now)
+                  } else {
+                      ids.add(id); send(MotionEvent.ACTION_POINTER_DOWN or ((ids.size - 1) shl 8), now)
+                  }
+              }
+
+              @Synchronized fun move(id: Int, x: Float, y: Float) {
+                  if (!ids.contains(id)) return
+                  px[id] = x; py[id] = y
+                  send(MotionEvent.ACTION_MOVE, SystemClock.uptimeMillis())
+              }
+
+              @Synchronized fun up(id: Int) {
+                  val i = ids.indexOf(id)
+                  if (i < 0) return
+                  val now = SystemClock.uptimeMillis()
+                  if (ids.size == 1) send(MotionEvent.ACTION_UP, now)
+                  else send(MotionEvent.ACTION_POINTER_UP or (i shl 8), now)
+                  ids.removeAt(i); px.remove(id); py.remove(id)
+              }
+
+              @Synchronized fun releaseAll() {
+                  while (ids.isNotEmpty()) up(ids[ids.size - 1])
+              }
+          }
+          EOF
+
           cat > $K/MapperService.kt <<'EOF'
           package com.gengar.mousepro
 
-          import android.accessibilityservice.AccessibilityService
-          import android.accessibilityservice.GestureDescription
-          import android.accessibilityservice.GestureDescription.StrokeDescription
-          import android.graphics.Path
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
           import android.graphics.PixelFormat
+          import android.os.Build
           import android.os.Handler
+          import android.os.IBinder
           import android.os.Looper
+          import android.provider.Settings
           import android.view.WindowManager
-          import android.view.accessibility.AccessibilityEvent
           import kotlin.math.abs
           import kotlin.math.hypot
           import kotlin.math.min
 
-          class MapperService : AccessibilityService() {
+          class MapperService : Service() {
               companion object {
                   var instance: MapperService? = null
-                  private const val TICK = 32L
               }
 
-              private class Ch { var stroke: StrokeDescription? = null; var x = 0f; var y = 0f }
-
               private val handler = Handler(Looper.getMainLooper())
-              private val chs = HashMap<String, Ch>()
-              private val taps = ArrayDeque<Pair<Float, Float>>()
               private val pressed = HashSet<Int>()
               private val toggled = HashSet<String>()
+              private val chIds = HashMap<String, Int>()
               private var wm: WindowManager? = null
               private var overlay: OverlayView? = null
-              private var running = false
-              private var camIdle = 0
               private var pendX = 0f
               private var pendY = 0f
+              private var camOn = false
+              private var camX = 0f
+              private var camY = 0f
+              private var flushPosted = false
 
               var layout: MutableList<Config.Btn> = mutableListOf()
 
-              val isRunning get() = running
-              private val sw get() = resources.displayMetrics.widthPixels.toFloat()
-              private val sh get() = resources.displayMetrics.heightPixels.toFloat()
+              val isRunning get() = overlay != null
+              private val sw: Float get() {
+                  val w = overlay?.width ?: 0
+                  return if (w > 0) w.toFloat() else resources.displayMetrics.widthPixels.toFloat()
+              }
+              private val sh: Float get() {
+                  val h = overlay?.height ?: 0
+                  return if (h > 0) h.toFloat() else resources.displayMetrics.heightPixels.toFloat()
+              }
 
-              override fun onServiceConnected() { instance = this }
-              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
-              override fun onInterrupt() {}
-              override fun onDestroy() { stop(); instance = null; super.onDestroy() }
+              override fun onBind(i: Intent?): IBinder? = null
+
+              override fun onCreate() { super.onCreate(); instance = this }
+
+              override fun onDestroy() { stopOverlay(); instance = null; super.onDestroy() }
+
+              override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+                  startFg()
+                  if (!Client.connected) Client.connect(this)
+                  val mode = i?.getStringExtra("mode")
+                  if (mode == "run" || mode == "edit") {
+                      if (!startOverlay()) { shutdown(); return START_NOT_STICKY }
+                      setEdit(mode == "edit")
+                  }
+                  return START_NOT_STICKY
+              }
+
+              private fun startFg() {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("gmp", "Mapeador", NotificationManager.IMPORTANCE_LOW))
+                  val n = Notification.Builder(this, "gmp")
+                      .setContentTitle("Gengar Mouse Pro")
+                      .setContentText("Mapeador ativo")
+                      .setSmallIcon(android.R.drawable.ic_menu_manage)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                  else startForeground(1, n)
+              }
 
               fun reloadLayout() { layout = Config.load(this) }
 
-              fun start() {
-                  if (overlay != null) return
+              private fun startOverlay(): Boolean {
+                  if (overlay != null) return true
+                  if (!Settings.canDrawOverlays(this)) return false
                   reloadLayout()
                   val v = OverlayView(this, this)
-                  overlay = v
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
                   wm!!.addView(v, params(false))
-                  running = true
-                  v.setCapture(true)
-                  handler.post(tickRunnable)
+                  overlay = v
+                  return true
               }
 
-              fun stop() {
-                  running = false
-                  handler.removeCallbacks(tickRunnable)
-                  overlay?.let { it.setCapture(false); try { wm?.removeView(it) } catch (_: Exception) {} }
-                  overlay = null
+              private fun stopOverlay() {
                   releaseAll()
-                  toggled.clear()
-                  pendX = 0f; pendY = 0f
-                  flushRelease()
+                  overlay?.let {
+                      it.setCapture(false)
+                      try { wm?.removeView(it) } catch (_: Exception) {}
+                  }
+                  overlay = null
+              }
+
+              fun shutdown() {
+                  stopOverlay()
+                  stopForeground(STOP_FOREGROUND_REMOVE)
+                  stopSelf()
               }
 
               fun setEdit(on: Boolean) {
                   val v = overlay ?: return
+                  releaseAll()
                   v.edit = on
                   v.setCapture(!on)
                   wm?.updateViewLayout(v, params(on))
@@ -326,32 +626,69 @@ jobs:
                   var f = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                           WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                   if (!touchable) f = f or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                  return WindowManager.LayoutParams(
+                  val lp = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, f, PixelFormat.TRANSLUCENT
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, f, PixelFormat.TRANSLUCENT
                   )
+                  lp.layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) 3 else 1
+                  return lp
+              }
+
+              // ---------- toques (enviados ao servidor shell) ----------
+              private fun alloc(ch: String): Int {
+                  val old = chIds[ch]
+                  if (old != null) return old
+                  var i = 0
+                  while (chIds.containsValue(i)) i++
+                  chIds[ch] = i
+                  return i
+              }
+
+              private fun touchDown(ch: String, x: Float, y: Float) {
+                  val id = alloc(ch)
+                  Client.send("D $id $x $y")
+              }
+
+              private fun touchMove(ch: String, x: Float, y: Float) {
+                  val id = chIds[ch] ?: return
+                  Client.send("M $id $x $y")
+              }
+
+              private fun touchUp(ch: String) {
+                  val id = chIds.remove(ch) ?: return
+                  Client.send("U $id")
               }
 
               // ---------- entradas ----------
-              fun addDelta(dx: Float, dy: Float) { pendX += dx; pendY += dy }
-
               fun isMapped(code: Int): Boolean =
                   layout.any { it.key == code || (it.type == Config.JOY && code in it.ks) }
 
-              fun releaseAll() { pressed.clear() }
+              fun releaseAll() {
+                  handler.removeCallbacksAndMessages(null)
+                  flushPosted = false
+                  pressed.clear()
+                  toggled.clear()
+                  for (ch in chIds.keys.toList()) touchUp(ch)
+                  camOn = false
+                  pendX = 0f; pendY = 0f
+              }
 
               fun key(code: Int, down: Boolean) {
-                  if (down) {
-                      if (!pressed.add(code)) return
-                      for (b in layout) {
-                          if (b.key != code) continue
-                          when (b.type) {
-                              Config.TAP -> if (taps.size < 6) taps.addLast((b.x * sw) to (b.y * sh))
-                              Config.TOGGLE -> if (!toggled.remove(b.id)) toggled.add(b.id)
+                  if (down) { if (!pressed.add(code)) return } else { if (!pressed.remove(code)) return }
+                  for (b in layout.toList()) {
+                      val x = b.x * sw
+                      val y = b.y * sh
+                      when (b.type) {
+                          Config.TAP -> if (down && b.key == code) tap(b, x, y)
+                          Config.HOLD -> if (b.key == code) {
+                              if (down) touchDown("h_" + b.id, x, y) else touchUp("h_" + b.id)
                           }
+                          Config.TOGGLE -> if (down && b.key == code) {
+                              if (toggled.remove(b.id)) touchUp("g_" + b.id)
+                              else { toggled.add(b.id); touchDown("g_" + b.id, x, y) }
+                          }
+                          Config.JOY -> if (code in b.ks) joy(b)
                       }
-                  } else {
-                      pressed.remove(code)
                   }
               }
 
@@ -360,140 +697,56 @@ jobs:
                   handler.postDelayed({ key(code, false) }, 70)
               }
 
-              // ---------- motor ----------
-              private val tickRunnable = Runnable { tick() }
+              private fun tap(b: Config.Btn, x: Float, y: Float) {
+                  val ch = "t_" + b.id
+                  if (chIds.containsKey(ch)) return
+                  touchDown(ch, x, y)
+                  handler.postDelayed({ touchUp(ch) }, 45)
+              }
 
-              private fun ch(id: String) = chs.getOrPut(id) { Ch() }
+              private fun joy(b: Config.Btn) {
+                  val dx = (if (b.ks[3] in pressed) 1 else 0) - (if (b.ks[1] in pressed) 1 else 0)
+                  val dy = (if (b.ks[2] in pressed) 1 else 0) - (if (b.ks[0] in pressed) 1 else 0)
+                  val ch = "j_" + b.id
+                  if (dx == 0 && dy == 0) { touchUp(ch); return }
+                  val cx = b.x * sw
+                  val cy = b.y * sh
+                  val rr = b.r * min(sw, sh)
+                  val n = hypot(dx.toFloat(), dy.toFloat())
+                  if (!chIds.containsKey(ch)) touchDown(ch, cx, cy)
+                  touchMove(ch, cx + dx / n * rr, cy + dy / n * rr)
+              }
 
-              private fun tick() {
-                  if (!running) return
-                  val strokes = ArrayList<StrokeDescription>()
-                  val seen = HashSet<String>()
-                  val m = min(sw, sh)
+              // ---------- câmera (mouse) ----------
+              private val flush = Runnable { flushPosted = false; moveCam() }
+              private val camIdle = Runnable { if (camOn) { touchUp("cam"); camOn = false } }
 
-                  for (b in layout.toList()) {
-                      val px = b.x * sw
-                      val py = b.y * sh
-                      when (b.type) {
-                          Config.HOLD, Config.TOGGLE -> {
-                              seen.add(b.id)
-                              val on = if (b.type == Config.HOLD) b.key in pressed else b.id in toggled
-                              val c = ch(b.id)
-                              if (on) strokes += hold(c, px, py)
-                              else if (c.stroke != null) strokes += release(c)
-                          }
-                          Config.JOY -> {
-                              seen.add(b.id)
-                              val dx = (if (b.ks[3] in pressed) 1 else 0) - (if (b.ks[1] in pressed) 1 else 0)
-                              val dy = (if (b.ks[2] in pressed) 1 else 0) - (if (b.ks[0] in pressed) 1 else 0)
-                              val c = ch(b.id)
-                              if (dx != 0 || dy != 0) {
-                                  val rr = b.r * m
-                                  val n = hypot(dx.toFloat(), dy.toFloat())
-                                  strokes += move(c, px, py, px + dx / n * rr, py + dy / n * rr)
-                              } else if (c.stroke != null) strokes += release(c)
-                          }
-                      }
-                  }
+              fun addDelta(dx: Float, dy: Float) {
+                  pendX += dx; pendY += dy
+                  if (!flushPosted) { flushPosted = true; handler.postDelayed(flush, 8) }
+              }
 
-                  val camB = layout.firstOrNull { it.type == Config.CAM }
-                  if (camB == null) {
-                      pendX = 0f; pendY = 0f
+              private fun moveCam() {
+                  val c = layout.firstOrNull { it.type == Config.CAM }
+                  val dx = pendX
+                  val dy = pendY
+                  pendX = 0f; pendY = 0f
+                  if (c == null || (dx == 0f && dy == 0f)) return
+                  val cx = c.x * sw
+                  val cy = c.y * sh
+                  val ext = c.r * min(sw, sh)
+                  val firing = layout.any { it.type == Config.HOLD && it.id == "fire" && it.key in pressed }
+                  val fm = if (firing) Config.fireMul(this) else 1f
+                  if (!camOn) { camX = cx; camY = cy; touchDown("cam", cx, cy); camOn = true }
+                  camX += dx * Config.sensX(this) * fm
+                  camY += dy * Config.sensY(this) * fm
+                  if (abs(camX - cx) > ext || abs(camY - cy) > ext) {
+                      touchUp("cam"); camX = cx; camY = cy; touchDown("cam", cx, cy)
                   } else {
-                      seen.add(camB.id)
-                      val cc = ch(camB.id)
-                      val cx = camB.x * sw
-                      val cy = camB.y * sh
-                      val ext = camB.r * m
-                      if (abs(pendX) > 0.5f || abs(pendY) > 0.5f) {
-                          camIdle = 0
-                          val k = Config.smooth(this)
-                          val dx = pendX * k
-                          val dy = pendY * k
-                          pendX -= dx; pendY -= dy
-                          val fx = if (cc.stroke == null) cx else cc.x
-                          val fy = if (cc.stroke == null) cy else cc.y
-                          var tx = fx + dx * Config.sensX(this)
-                          var ty = fy + dy * Config.sensY(this)
-                          if (cc.stroke == null) {
-                              tx = tx.coerceIn(cx - ext, cx + ext)
-                              ty = ty.coerceIn(cy - ext, cy + ext)
-                          }
-                          if (abs(tx - cx) > ext || abs(ty - cy) > ext) {
-                              strokes += release(cc)
-                              pendX += dx; pendY += dy
-                          } else strokes += move(cc, cx, cy, tx, ty)
-                      } else if (cc.stroke != null) {
-                          camIdle++
-                          strokes += if (camIdle > 3) release(cc) else hold(cc, cc.x, cc.y)
-                      }
+                      touchMove("cam", camX, camY)
                   }
-
-                  for ((id, c) in chs) if (id !in seen && c.stroke != null) strokes += release(c)
-
-                  val tapStrokes = ArrayList<StrokeDescription>()
-                  while (taps.isNotEmpty() && strokes.size + tapStrokes.size < 18) {
-                      val t = taps.removeFirst()
-                      val p = Path().apply { moveTo(t.first, t.second) }
-                      tapStrokes += StrokeDescription(p, 0, TICK)
-                  }
-
-                  if (strokes.isEmpty() && tapStrokes.isEmpty()) {
-                      handler.postDelayed(tickRunnable, TICK); return
-                  }
-                  val b = GestureDescription.Builder()
-                  strokes.forEach { b.addStroke(it) }
-                  tapStrokes.forEach { b.addStroke(it) }
-                  val ok = dispatchGesture(b.build(), object : GestureResultCallback() {
-                      override fun onCompleted(g: GestureDescription?) { handler.post(tickRunnable) }
-                      override fun onCancelled(g: GestureDescription?) { resetAll(); handler.post(tickRunnable) }
-                  }, null)
-                  if (!ok) { resetAll(); handler.postDelayed(tickRunnable, TICK) }
-              }
-
-              private fun move(ch: Ch, sx: Float, sy: Float, tx: Float, ty: Float): StrokeDescription {
-                  val p = Path()
-                  val prev = ch.stroke
-                  val s = if (prev == null) {
-                      p.moveTo(sx, sy); p.lineTo(tx, ty)
-                      StrokeDescription(p, 0, TICK, true)
-                  } else {
-                      p.moveTo(ch.x, ch.y); p.lineTo(tx, ty)
-                      prev.continueStroke(p, 0, TICK, true)
-                  }
-                  ch.stroke = s; ch.x = tx; ch.y = ty
-                  return s
-              }
-
-              private fun hold(ch: Ch, x: Float, y: Float): StrokeDescription {
-                  val p = Path()
-                  val prev = ch.stroke
-                  val s = if (prev == null) {
-                      ch.x = x; ch.y = y
-                      p.moveTo(x, y); StrokeDescription(p, 0, TICK, true)
-                  } else {
-                      p.moveTo(ch.x, ch.y); prev.continueStroke(p, 0, TICK, true)
-                  }
-                  ch.stroke = s
-                  return s
-              }
-
-              private fun release(ch: Ch): StrokeDescription {
-                  val p = Path().apply { moveTo(ch.x, ch.y) }
-                  val s = ch.stroke!!.continueStroke(p, 0, 1, false)
-                  ch.stroke = null
-                  return s
-              }
-
-              private fun resetAll() { chs.values.forEach { it.stroke = null } }
-
-              private fun flushRelease() {
-                  val list = ArrayList<StrokeDescription>()
-                  for (c in chs.values) if (c.stroke != null) list += release(c)
-                  if (list.isEmpty()) return
-                  val b = GestureDescription.Builder()
-                  list.forEach { b.addStroke(it) }
-                  dispatchGesture(b.build(), null, null)
+                  handler.removeCallbacks(camIdle)
+                  handler.postDelayed(camIdle, 150)
               }
           }
           EOF
@@ -756,12 +1009,21 @@ jobs:
           package com.gengar.mousepro
 
           import android.app.Activity
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.ComponentName
+          import android.content.Context
           import android.content.Intent
+          import android.content.ServiceConnection
+          import android.content.pm.PackageManager
           import android.content.res.ColorStateList
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
           import android.os.Bundle
+          import android.os.IBinder
+          import android.os.Parcel
           import android.provider.Settings
           import android.view.Gravity
           import android.view.KeyEvent
@@ -769,6 +1031,7 @@ jobs:
           import android.view.ViewGroup.LayoutParams.MATCH_PARENT
           import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
           import android.widget.*
+          import rikka.shizuku.Shizuku
 
           class MainActivity : Activity() {
               private lateinit var bg: ImageView
@@ -780,8 +1043,34 @@ jobs:
               private val purple = Color.rgb(124, 58, 237)
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+              private val permListener = Shizuku.OnRequestPermissionResultListener { _, res ->
+                  if (res == PackageManager.PERMISSION_GRANTED) runOnUiThread { shizuku() }
+              }
+
+              private val conn = object : ServiceConnection {
+                  override fun onServiceConnected(n: ComponentName?, b: IBinder?) {
+                      if (b == null) return
+                      val d = Parcel.obtain()
+                      val r = Parcel.obtain()
+                      try {
+                          d.writeString(Config.token(this@MainActivity))
+                          b.transact(1, d, r, 0)
+                      } catch (e: Exception) {
+                          toast("Falha: " + e.message)
+                      } finally {
+                          d.recycle(); r.recycle()
+                      }
+                      Client.connect(this@MainActivity) { ok ->
+                          refresh()
+                          toast(if (ok) "Servidor conectado" else "Servidor não respondeu")
+                      }
+                  }
+                  override fun onServiceDisconnected(n: ComponentName?) {}
+              }
+
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
+                  Shizuku.addRequestPermissionResultListener(permListener)
                   val root = FrameLayout(this)
                   bg = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
                   root.addView(bg, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -802,24 +1091,46 @@ jobs:
                   }
                   col.addView(status)
 
-                  col.addView(btn("Ativar serviço de acessibilidade") {
-                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  col.addView(label("1) Permissão"))
+                  col.addView(btn("Permitir sobreposição de tela") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                   })
+                  col.addView(label("2) Conexão (escolha uma)"))
+                  col.addView(btn("Conectar via Shizuku") { shizuku() })
+                  col.addView(btn("Depuração USB/ADB: copiar comando") {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("adb", adbCmd()))
+                      toast("Comando copiado. Cole no terminal (adb) e depois toque em Verificar conexão")
+                  })
+                  col.addView(btn("Verificar conexão") {
+                      Client.connect(this) { ok -> refresh(); toast(if (ok) "Servidor conectado" else "Servidor não encontrado") }
+                  })
+
+                  col.addView(label("3) Mapeador"))
                   col.addView(btn("▶  Iniciar mapeador") {
-                      val s = MapperService.instance
-                      if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
-                          s.start(); refresh(); moveTaskToBack(true)
-                          toast("Abra o jogo. A tecla do cursor solta/pega o mouse")
+                      when {
+                          !Settings.canDrawOverlays(this) -> toast("Permita a sobreposição de tela primeiro")
+                          !Client.connected -> toast("Conecte via Shizuku ou ADB primeiro")
+                          else -> {
+                              startForegroundService(Intent(this, MapperService::class.java).putExtra("mode", "run"))
+                              moveTaskToBack(true)
+                              toast("Abra o jogo. A tecla do cursor solta/pega o mouse")
+                          }
                       }
                   })
                   col.addView(btn("✎  Editar layout dos botões") {
-                      val s = MapperService.instance
-                      if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
-                          s.start(); s.setEdit(true); moveTaskToBack(true)
-                          toast("Abra o jogo e arraste os botões. Toque num botão para configurar")
+                      when {
+                          !Settings.canDrawOverlays(this) -> toast("Permita a sobreposição de tela primeiro")
+                          !Client.connected -> toast("Conecte via Shizuku ou ADB primeiro")
+                          else -> {
+                              startForegroundService(Intent(this, MapperService::class.java).putExtra("mode", "edit"))
+                              moveTaskToBack(true)
+                              toast("Abra o jogo e arraste os botões. Toque num botão para configurar")
+                          }
                       }
                   })
-                  col.addView(btn("■  Parar") { MapperService.instance?.stop(); refresh() })
+                  col.addView(btn("■  Parar") { MapperService.instance?.shutdown(); refresh() })
+                  col.addView(btn("Encerrar servidor shell") { Client.quit(); refresh() })
 
                   capBtn = btn("Tecla do cursor: ${Config.keyName(Config.capKey(this))}") {
                       waitKey = true; capBtn.text = "Aperte uma tecla do teclado..."
@@ -827,11 +1138,11 @@ jobs:
                   col.addView(capBtn)
 
                   col.addView(label("Sensibilidade horizontal (X)"))
-                  col.addView(seek(27, ((Config.sensX(this) * 10) - 3).toInt()) { Config.setSensX(this, (it + 3) / 10f) })
+                  col.addView(seek(37, ((Config.sensX(this) * 10) - 3).toInt()) { Config.setSensX(this, (it + 3) / 10f) })
                   col.addView(label("Sensibilidade vertical (Y)"))
-                  col.addView(seek(27, ((Config.sensY(this) * 10) - 3).toInt()) { Config.setSensY(this, (it + 3) / 10f) })
-                  col.addView(label("Suavização da mira (maior = mais direto, menor = mais estável)"))
-                  col.addView(seek(7, ((Config.smooth(this) * 10) - 3).toInt()) { Config.setSmooth(this, (it + 3) / 10f) })
+                  col.addView(seek(37, ((Config.sensY(this) * 10) - 3).toInt()) { Config.setSensY(this, (it + 3) / 10f) })
+                  col.addView(label("Sensibilidade ao atirar (multiplicador)"))
+                  col.addView(seek(13, ((Config.fireMul(this) * 10) - 2).toInt()) { Config.setFireMul(this, (it + 2) / 10f) })
 
                   col.addView(label("Perfil de layout"))
                   val prow = LinearLayout(this)
@@ -842,6 +1153,20 @@ jobs:
                       })
                   }
                   col.addView(prow)
+                  col.addView(btn("Exportar layout (copiar)") {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("layout", Config.toJson(Config.load(this))))
+                      toast("Layout copiado")
+                  })
+                  col.addView(btn("Importar layout (colar)") {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      val clip = cm.primaryClip
+                      val txt = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).text?.toString() else null
+                      val l = if (txt != null) Config.fromJson(txt) else null
+                      if (l == null) toast("A área de transferência não tem um layout válido") else {
+                          Config.save(this, l); MapperService.instance?.reloadLayout(); toast("Layout importado")
+                      }
+                  })
                   col.addView(btn("Restaurar layout padrão deste perfil") {
                       Config.save(this, Config.defaults()); MapperService.instance?.reloadLayout()
                       toast("Layout padrão restaurado")
@@ -867,6 +1192,32 @@ jobs:
                   bg.setImageResource(wps[Config.wp(this).coerceIn(0, 3)])
               }
 
+              override fun onDestroy() {
+                  Shizuku.removeRequestPermissionResultListener(permListener)
+                  super.onDestroy()
+              }
+
+              private fun adbCmd(): String =
+                  "adb shell appops set $packageName SYSTEM_ALERT_WINDOW allow\n" +
+                  "adb shell 'CLASSPATH=\$(pm path $packageName | cut -d: -f2) nohup setsid app_process /system/bin " +
+                  "--nice-name=gmp_server com.gengar.mousepro.Server ${Config.token(this)} >/dev/null 2>&1 &'"
+
+              private fun shizuku() {
+                  try {
+                      if (!Shizuku.pingBinder()) { toast("Shizuku não está ativo. Abra o app Shizuku e inicie o serviço"); return }
+                      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                          Shizuku.requestPermission(77); return
+                      }
+                      @Suppress("DEPRECATION")
+                      val ver = packageManager.getPackageInfo(packageName, 0).versionCode
+                      val args = Shizuku.UserServiceArgs(ComponentName(packageName, ShellServer::class.java.name))
+                          .processNameSuffix("server").debuggable(false).version(ver)
+                      Shizuku.bindUserService(args, conn)
+                  } catch (e: Throwable) {
+                      toast("Shizuku: " + e.message)
+                  }
+              }
+
               override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
                   if (waitKey) {
                       waitKey = false
@@ -877,16 +1228,17 @@ jobs:
                   return super.onKeyDown(keyCode, event)
               }
 
-              override fun onResume() { super.onResume(); refresh() }
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+                  if (!Client.connected) Client.connect(this) { refresh() }
+              }
 
               private fun refresh() {
-                  val s = MapperService.instance
-                  val p = "Perfil ${Config.profile(this) + 1}"
-                  status.text = when {
-                      s == null -> "⚠ Serviço desativado — ative em Acessibilidade"
-                      s.isRunning -> "● Mapeador ATIVO · $p"
-                      else -> "Pronto · $p"
-                  }
+                  val ov = if (Settings.canDrawOverlays(this)) "✔" else "✘"
+                  val sv = if (Client.connected) "● conectado" else "○ desconectado"
+                  val mp = if (MapperService.instance?.isRunning == true) "ATIVO" else "parado"
+                  status.text = "Sobreposição: $ov\nServidor: $sv\nMapeador: $mp · Perfil ${Config.profile(this) + 1}"
               }
 
               private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
@@ -916,8 +1268,9 @@ jobs:
 
       - name: Compilar APK
         working-directory: GM
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: GengarMousePro-apk
           path: GM/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
