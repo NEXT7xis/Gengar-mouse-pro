@@ -57,8 +57,8 @@ jobs:
                   applicationId = "com.gengar.mousepro"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "2.0"
               }
               compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
               kotlinOptions { jvmTarget = "17" }
@@ -149,41 +149,96 @@ jobs:
 
           import android.content.Context
           import android.view.KeyEvent
-
-          data class Act(val id: String, val label: String, val key: Int, val fx: Float, val fy: Float)
+          import org.json.JSONArray
+          import org.json.JSONObject
 
           object Config {
-              val acts = listOf(
-                  Act("JOY", "Mover WASD", 0, 0.16f, 0.70f),
-                  Act("CAM", "Câmera", 0, 0.72f, 0.50f),
-                  Act("FIRE", "Atirar", 0, 0.88f, 0.62f),
-                  Act("SCOPE", "Mirar", 0, 0.80f, 0.42f),
-                  Act("JUMP", "Pular", KeyEvent.KEYCODE_SPACE, 0.94f, 0.78f),
-                  Act("CROUCH", "Agachar C", KeyEvent.KEYCODE_C, 0.90f, 0.90f),
-                  Act("RELOAD", "Recarregar R", KeyEvent.KEYCODE_R, 0.72f, 0.88f),
-                  Act("USE", "Interagir F", KeyEvent.KEYCODE_F, 0.62f, 0.62f),
-                  Act("W1", "Arma 1", KeyEvent.KEYCODE_1, 0.58f, 0.92f),
-                  Act("W2", "Arma 2", KeyEvent.KEYCODE_2, 0.66f, 0.92f),
-                  Act("NADE", "Granada G", KeyEvent.KEYCODE_G, 0.50f, 0.80f),
-                  Act("HEAL", "Curar H", KeyEvent.KEYCODE_H, 0.50f, 0.65f)
+              const val TAP = 0
+              const val HOLD = 1
+              const val TOGGLE = 2
+              const val JOY = 3
+              const val CAM = 4
+              val typeNames = arrayOf("TOQUE", "SEGURAR", "ALTERNAR", "JOYSTICK", "CÂMERA")
+
+              // key: teclado = keyCode; mouse E/D/Meio/Voltar/Frente = 1001..1005; scroll cima/baixo = 1010/1011
+              class Btn(
+                  var id: String, var type: Int, var label: String, var key: Int,
+                  var x: Float, var y: Float, var r: Float,
+                  var ks: IntArray = intArrayOf(KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D)
               )
 
-              private fun p(c: Context) = c.getSharedPreferences("gmp", Context.MODE_PRIVATE)
+              fun defaults(): MutableList<Btn> = mutableListOf(
+                  Btn("joy", JOY, "Mover", 0, 0.16f, 0.70f, 0.09f),
+                  Btn("cam", CAM, "Câmera", 0, 0.72f, 0.50f, 0.30f),
+                  Btn("fire", HOLD, "Atirar", 1001, 0.88f, 0.62f, 0.06f),
+                  Btn("scope", TAP, "Mirar", 1002, 0.80f, 0.42f, 0.045f),
+                  Btn("jump", TAP, "Pular", KeyEvent.KEYCODE_SPACE, 0.94f, 0.78f, 0.045f),
+                  Btn("crouch", TAP, "Agachar", KeyEvent.KEYCODE_C, 0.90f, 0.90f, 0.045f),
+                  Btn("reload", TAP, "Recarregar", KeyEvent.KEYCODE_R, 0.72f, 0.88f, 0.045f),
+                  Btn("use", TAP, "Interagir", KeyEvent.KEYCODE_F, 0.62f, 0.62f, 0.045f),
+                  Btn("w1", TAP, "Arma 1", KeyEvent.KEYCODE_1, 0.58f, 0.92f, 0.045f),
+                  Btn("w2", TAP, "Arma 2", KeyEvent.KEYCODE_2, 0.66f, 0.92f, 0.045f),
+                  Btn("nade", TAP, "Granada", KeyEvent.KEYCODE_G, 0.50f, 0.80f, 0.045f),
+                  Btn("heal", TAP, "Curar", KeyEvent.KEYCODE_H, 0.50f, 0.65f, 0.045f)
+              )
 
-              fun pos(c: Context, a: Act): Pair<Float, Float> {
-                  val s = p(c).getString("pos_" + a.id, null) ?: return a.fx to a.fy
-                  val t = s.split(",")
-                  return t[0].toFloat() to t[1].toFloat()
+              fun keyName(c: Int): String = when {
+                  c == 0 -> "—"
+                  c == 1001 -> "Mouse E"
+                  c == 1002 -> "Mouse D"
+                  c == 1003 -> "Mouse Meio"
+                  c == 1004 -> "Mouse Voltar"
+                  c == 1005 -> "Mouse Frente"
+                  c == 1010 -> "Scroll ↑"
+                  c == 1011 -> "Scroll ↓"
+                  else -> KeyEvent.keyCodeToString(c).removePrefix("KEYCODE_")
               }
-              fun setPos(c: Context, id: String, fx: Float, fy: Float) {
-                  p(c).edit().putString("pos_$id", "$fx,$fy").apply()
+
+              private fun prefs(c: Context) = c.getSharedPreferences("gmp2", Context.MODE_PRIVATE)
+
+              fun profile(c: Context) = prefs(c).getInt("profile", 0)
+              fun setProfile(c: Context, v: Int) = prefs(c).edit().putInt("profile", v).apply()
+
+              fun load(c: Context, p: Int = profile(c)): MutableList<Btn> {
+                  val s = prefs(c).getString("p$p", null) ?: return defaults()
+                  return try {
+                      val a = JSONArray(s)
+                      val out = mutableListOf<Btn>()
+                      for (i in 0 until a.length()) {
+                          val o = a.getJSONObject(i)
+                          val ka = o.getJSONArray("ks")
+                          out.add(Btn(
+                              o.getString("id"), o.getInt("t"), o.getString("l"), o.getInt("k"),
+                              o.getDouble("x").toFloat(), o.getDouble("y").toFloat(), o.getDouble("r").toFloat(),
+                              IntArray(4) { ka.getInt(it) }
+                          ))
+                      }
+                      out
+                  } catch (e: Exception) { defaults() }
               }
-              fun sens(c: Context) = p(c).getFloat("sens", 1.0f)
-              fun setSens(c: Context, v: Float) = p(c).edit().putFloat("sens", v).apply()
-              fun smooth(c: Context) = p(c).getFloat("smooth", 0.6f)
-              fun setSmooth(c: Context, v: Float) = p(c).edit().putFloat("smooth", v).apply()
-              fun wp(c: Context) = p(c).getInt("wp", 2)
-              fun setWp(c: Context, v: Int) = p(c).edit().putInt("wp", v).apply()
+
+              fun save(c: Context, list: List<Btn>, p: Int = profile(c)) {
+                  val a = JSONArray()
+                  for (b in list) {
+                      val o = JSONObject()
+                      o.put("id", b.id); o.put("t", b.type); o.put("l", b.label); o.put("k", b.key)
+                      o.put("x", b.x.toDouble()); o.put("y", b.y.toDouble()); o.put("r", b.r.toDouble())
+                      o.put("ks", JSONArray(b.ks.toList()))
+                      a.put(o)
+                  }
+                  prefs(c).edit().putString("p$p", a.toString()).apply()
+              }
+
+              fun sensX(c: Context) = prefs(c).getFloat("sx", 1.0f)
+              fun setSensX(c: Context, v: Float) = prefs(c).edit().putFloat("sx", v).apply()
+              fun sensY(c: Context) = prefs(c).getFloat("sy", 1.0f)
+              fun setSensY(c: Context, v: Float) = prefs(c).edit().putFloat("sy", v).apply()
+              fun smooth(c: Context) = prefs(c).getFloat("smooth", 0.6f)
+              fun setSmooth(c: Context, v: Float) = prefs(c).edit().putFloat("smooth", v).apply()
+              fun capKey(c: Context) = prefs(c).getInt("cap", KeyEvent.KEYCODE_ESCAPE)
+              fun setCapKey(c: Context, v: Int) = prefs(c).edit().putInt("cap", v).apply()
+              fun wp(c: Context) = prefs(c).getInt("wp", 2)
+              fun setWp(c: Context, v: Int) = prefs(c).edit().putInt("wp", v).apply()
           }
           EOF
 
@@ -212,17 +267,18 @@ jobs:
               private class Ch { var stroke: StrokeDescription? = null; var x = 0f; var y = 0f }
 
               private val handler = Handler(Looper.getMainLooper())
-              private val joy = Ch(); private val cam = Ch(); private val fire = Ch(); private val scope = Ch()
+              private val chs = HashMap<String, Ch>()
               private val taps = ArrayDeque<Pair<Float, Float>>()
+              private val pressed = HashSet<Int>()
+              private val toggled = HashSet<String>()
               private var wm: WindowManager? = null
               private var overlay: OverlayView? = null
               private var running = false
               private var camIdle = 0
-              private var weaponToggle = false
+              private var pendX = 0f
+              private var pendY = 0f
 
-              var dirX = 0; var dirY = 0
-              var fireDown = false; var scopeDown = false
-              private var pendX = 0f; private var pendY = 0f
+              var layout: MutableList<Config.Btn> = mutableListOf()
 
               val isRunning get() = running
               private val sw get() = resources.displayMetrics.widthPixels.toFloat()
@@ -233,8 +289,11 @@ jobs:
               override fun onInterrupt() {}
               override fun onDestroy() { stop(); instance = null; super.onDestroy() }
 
+              fun reloadLayout() { layout = Config.load(this) }
+
               fun start() {
                   if (overlay != null) return
+                  reloadLayout()
                   val v = OverlayView(this, this)
                   overlay = v
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -249,7 +308,9 @@ jobs:
                   handler.removeCallbacks(tickRunnable)
                   overlay?.let { it.setCapture(false); try { wm?.removeView(it) } catch (_: Exception) {} }
                   overlay = null
-                  dirX = 0; dirY = 0; fireDown = false; scopeDown = false; pendX = 0f; pendY = 0f
+                  releaseAll()
+                  toggled.clear()
+                  pendX = 0f; pendY = 0f
                   flushRelease()
               }
 
@@ -271,52 +332,104 @@ jobs:
                   )
               }
 
+              // ---------- entradas ----------
               fun addDelta(dx: Float, dy: Float) { pendX += dx; pendY += dy }
-              fun tap(id: String) { if (taps.size < 6) taps.addLast(px(id)) }
-              fun cycleWeapon() { weaponToggle = !weaponToggle; tap(if (weaponToggle) "W2" else "W1") }
 
-              private fun px(id: String): Pair<Float, Float> {
-                  val a = Config.acts.first { it.id == id }
-                  val (fx, fy) = Config.pos(this, a)
-                  return fx * sw to fy * sh
+              fun isMapped(code: Int): Boolean =
+                  layout.any { it.key == code || (it.type == Config.JOY && code in it.ks) }
+
+              fun releaseAll() { pressed.clear() }
+
+              fun key(code: Int, down: Boolean) {
+                  if (down) {
+                      if (!pressed.add(code)) return
+                      for (b in layout) {
+                          if (b.key != code) continue
+                          when (b.type) {
+                              Config.TAP -> if (taps.size < 6) taps.addLast((b.x * sw) to (b.y * sh))
+                              Config.TOGGLE -> if (!toggled.remove(b.id)) toggled.add(b.id)
+                          }
+                      }
+                  } else {
+                      pressed.remove(code)
+                  }
               }
 
+              fun pulse(code: Int) {
+                  key(code, true)
+                  handler.postDelayed({ key(code, false) }, 70)
+              }
+
+              // ---------- motor ----------
               private val tickRunnable = Runnable { tick() }
+
+              private fun ch(id: String) = chs.getOrPut(id) { Ch() }
 
               private fun tick() {
                   if (!running) return
                   val strokes = ArrayList<StrokeDescription>()
+                  val seen = HashSet<String>()
+                  val m = min(sw, sh)
 
-                  val j = px("JOY")
-                  if (dirX != 0 || dirY != 0) {
-                      val r = min(sw, sh) * 0.09f
-                      val n = hypot(dirX.toFloat(), dirY.toFloat())
-                      strokes += move(joy, j.first, j.second, j.first + dirX / n * r, j.second + dirY / n * r)
-                  } else if (joy.stroke != null) strokes += release(joy)
-
-                  val c = px("CAM")
-                  if (abs(pendX) > 0.5f || abs(pendY) > 0.5f) {
-                      camIdle = 0
-                      val k = Config.smooth(this)
-                      val dx = pendX * k; val dy = pendY * k
-                      pendX -= dx; pendY -= dy
-                      val s = Config.sens(this)
-                      val fromX = if (cam.stroke == null) c.first else cam.x
-                      val fromY = if (cam.stroke == null) c.second else cam.y
-                      val tx = fromX + dx * s; val ty = fromY + dy * s
-                      if (tx < sw * 0.45f || tx > sw * 0.97f || ty < sh * 0.1f || ty > sh * 0.9f) {
-                          if (cam.stroke != null) strokes += release(cam)
-                          pendX += dx; pendY += dy
-                      } else strokes += move(cam, c.first, c.second, tx, ty)
-                  } else if (cam.stroke != null) {
-                      camIdle++
-                      strokes += if (camIdle > 3) release(cam) else hold(cam, cam.x, cam.y)
+                  for (b in layout.toList()) {
+                      val px = b.x * sw
+                      val py = b.y * sh
+                      when (b.type) {
+                          Config.HOLD, Config.TOGGLE -> {
+                              seen.add(b.id)
+                              val on = if (b.type == Config.HOLD) b.key in pressed else b.id in toggled
+                              val c = ch(b.id)
+                              if (on) strokes += hold(c, px, py)
+                              else if (c.stroke != null) strokes += release(c)
+                          }
+                          Config.JOY -> {
+                              seen.add(b.id)
+                              val dx = (if (b.ks[3] in pressed) 1 else 0) - (if (b.ks[1] in pressed) 1 else 0)
+                              val dy = (if (b.ks[2] in pressed) 1 else 0) - (if (b.ks[0] in pressed) 1 else 0)
+                              val c = ch(b.id)
+                              if (dx != 0 || dy != 0) {
+                                  val rr = b.r * m
+                                  val n = hypot(dx.toFloat(), dy.toFloat())
+                                  strokes += move(c, px, py, px + dx / n * rr, py + dy / n * rr)
+                              } else if (c.stroke != null) strokes += release(c)
+                          }
+                      }
                   }
 
-                  if (fireDown) { val f = px("FIRE"); strokes += hold(fire, f.first, f.second) }
-                  else if (fire.stroke != null) strokes += release(fire)
-                  if (scopeDown) { val f = px("SCOPE"); strokes += hold(scope, f.first, f.second) }
-                  else if (scope.stroke != null) strokes += release(scope)
+                  val camB = layout.firstOrNull { it.type == Config.CAM }
+                  if (camB == null) {
+                      pendX = 0f; pendY = 0f
+                  } else {
+                      seen.add(camB.id)
+                      val cc = ch(camB.id)
+                      val cx = camB.x * sw
+                      val cy = camB.y * sh
+                      val ext = camB.r * m
+                      if (abs(pendX) > 0.5f || abs(pendY) > 0.5f) {
+                          camIdle = 0
+                          val k = Config.smooth(this)
+                          val dx = pendX * k
+                          val dy = pendY * k
+                          pendX -= dx; pendY -= dy
+                          val fx = if (cc.stroke == null) cx else cc.x
+                          val fy = if (cc.stroke == null) cy else cc.y
+                          var tx = fx + dx * Config.sensX(this)
+                          var ty = fy + dy * Config.sensY(this)
+                          if (cc.stroke == null) {
+                              tx = tx.coerceIn(cx - ext, cx + ext)
+                              ty = ty.coerceIn(cy - ext, cy + ext)
+                          }
+                          if (abs(tx - cx) > ext || abs(ty - cy) > ext) {
+                              strokes += release(cc)
+                              pendX += dx; pendY += dy
+                          } else strokes += move(cc, cx, cy, tx, ty)
+                      } else if (cc.stroke != null) {
+                          camIdle++
+                          strokes += if (camIdle > 3) release(cc) else hold(cc, cc.x, cc.y)
+                      }
+                  }
+
+                  for ((id, c) in chs) if (id !in seen && c.stroke != null) strokes += release(c)
 
                   val tapStrokes = ArrayList<StrokeDescription>()
                   while (taps.isNotEmpty() && strokes.size + tapStrokes.size < 18) {
@@ -372,11 +485,11 @@ jobs:
                   return s
               }
 
-              private fun resetAll() { joy.stroke = null; cam.stroke = null; fire.stroke = null; scope.stroke = null }
+              private fun resetAll() { chs.values.forEach { it.stroke = null } }
 
               private fun flushRelease() {
                   val list = ArrayList<StrokeDescription>()
-                  for (ch in listOf(joy, cam, fire, scope)) if (ch.stroke != null) list += release(ch)
+                  for (c in chs.values) if (c.stroke != null) list += release(c)
                   if (list.isEmpty()) return
                   val b = GestureDescription.Builder()
                   list.forEach { b.addStroke(it) }
@@ -401,14 +514,25 @@ jobs:
           class OverlayView(ctx: Context, private val svc: MapperService) : View(ctx) {
               var edit = false
               private var wantCapture = false
-              private val down = HashSet<Int>()
               private val d = resources.displayMetrics.density
               private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-              private val live = HashMap<String, Pair<Float, Float>>()
-              private var drag: String? = null
-              private val okRect get() = RectF(width / 2f - 70 * d, 16 * d, width / 2f + 70 * d, 60 * d)
+              private val rects = LinkedHashMap<String, RectF>()
+              private var sel: Config.Btn? = null
+              private var drag: Config.Btn? = null
+              private var listen = 0      // 0 nada, 1 uma tecla, 2 quatro teclas do joystick
+              private var listenIdx = 0
+              private var lastButtons = 0
+              private val pink = Color.rgb(244, 63, 154)
+              private val maskCodes = listOf(
+                  MotionEvent.BUTTON_PRIMARY to 1001, MotionEvent.BUTTON_SECONDARY to 1002,
+                  MotionEvent.BUTTON_TERTIARY to 1003, MotionEvent.BUTTON_BACK to 1004,
+                  MotionEvent.BUTTON_FORWARD to 1005
+              )
 
-              init { isFocusable = true; isFocusableInTouchMode = true }
+              init {
+                  isFocusable = true; isFocusableInTouchMode = true
+                  paint.textAlign = Paint.Align.CENTER
+              }
 
               fun setCapture(on: Boolean) {
                   wantCapture = on
@@ -419,89 +543,207 @@ jobs:
               override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
                   super.onWindowFocusChanged(hasWindowFocus)
                   if (hasWindowFocus && wantCapture) { requestFocus(); requestPointerCapture() }
-              }
-              override fun onPointerCaptureChange(hasCapture: Boolean) { invalidate() }
-
-              private fun recalcDir() {
-                  svc.dirX = (if (KeyEvent.KEYCODE_D in down) 1 else 0) - (if (KeyEvent.KEYCODE_A in down) 1 else 0)
-                  svc.dirY = (if (KeyEvent.KEYCODE_S in down) 1 else 0) - (if (KeyEvent.KEYCODE_W in down) 1 else 0)
+                  if (!hasWindowFocus) svc.releaseAll()
               }
 
+              override fun onPointerCaptureChange(hasCapture: Boolean) {
+                  if (!hasCapture) {
+                      for ((_, c) in maskCodes) svc.key(c, false)
+                      lastButtons = 0
+                  }
+                  invalidate()
+              }
+
+              // ---------- teclado ----------
               override fun onKeyDown(code: Int, e: KeyEvent): Boolean {
-                  if (edit) return super.onKeyDown(code, e)
-                  if (code == KeyEvent.KEYCODE_ESCAPE) {
-                      if (e.repeatCount == 0) setCapture(!hasPointerCapture()); return true
+                  if (edit) {
+                      if (listen != 0) { assign(code); return true }
+                      return super.onKeyDown(code, e)
                   }
-                  when (code) {
-                      KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D -> {
-                          down += code; recalcDir(); return true
-                      }
+                  if (code == Config.capKey(context)) {
+                      if (e.repeatCount == 0) setCapture(!hasPointerCapture())
+                      return true
                   }
-                  val act = Config.acts.firstOrNull { it.key == code }
-                  if (act != null) { if (e.repeatCount == 0) svc.tap(act.id); return true }
-                  return super.onKeyDown(code, e)
+                  svc.key(code, true)
+                  return if (svc.isMapped(code)) true else super.onKeyDown(code, e)
               }
 
               override fun onKeyUp(code: Int, e: KeyEvent): Boolean {
-                  if (down.remove(code)) { recalcDir(); return true }
-                  return super.onKeyUp(code, e)
+                  if (edit) return super.onKeyUp(code, e)
+                  svc.key(code, false)
+                  return if (svc.isMapped(code)) true else super.onKeyUp(code, e)
               }
 
+              // ---------- mouse capturado ----------
               override fun onCapturedPointerEvent(e: MotionEvent): Boolean {
-                  svc.fireDown = (e.buttonState and MotionEvent.BUTTON_PRIMARY) != 0
-                  svc.scopeDown = (e.buttonState and MotionEvent.BUTTON_SECONDARY) != 0
+                  val bs = e.buttonState
+                  val v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                  if (edit && listen != 0) {
+                      for ((m, c) in maskCodes) {
+                          if ((bs and m) != 0 && (lastButtons and m) == 0) { lastButtons = bs; assign(c); return true }
+                      }
+                      lastButtons = bs
+                      if (e.actionMasked == MotionEvent.ACTION_SCROLL && v != 0f) assign(if (v > 0) 1010 else 1011)
+                      return true
+                  }
+                  for ((m, c) in maskCodes) {
+                      val now = (bs and m) != 0
+                      val was = (lastButtons and m) != 0
+                      if (now != was) svc.key(c, now)
+                  }
+                  lastButtons = bs
                   when (e.actionMasked) {
                       MotionEvent.ACTION_MOVE -> svc.addDelta(e.x, e.y)
-                      MotionEvent.ACTION_SCROLL -> if (e.getAxisValue(MotionEvent.AXIS_VSCROLL) != 0f) svc.cycleWeapon()
+                      MotionEvent.ACTION_SCROLL -> if (v != 0f) svc.pulse(if (v > 0) 1010 else 1011)
                   }
                   return true
               }
 
+              // ---------- edição ----------
+              private fun assign(code: Int) {
+                  val b = sel ?: return
+                  if (listen == 1) {
+                      b.key = code; listen = 0
+                  } else {
+                      b.ks[listenIdx] = code
+                      listenIdx++
+                      if (listenIdx >= 4) listen = 0
+                  }
+                  Config.save(context, svc.layout)
+                  if (listen == 0) setCapture(false)
+                  invalidate()
+              }
+
+              private fun drawBtn(c: Canvas, id: String, text: String, r: RectF) {
+                  rects[id] = r
+                  paint.style = Paint.Style.FILL; paint.color = Color.argb(225, 60, 20, 110)
+                  c.drawRoundRect(r, 14 * d, 14 * d, paint)
+                  paint.style = Paint.Style.STROKE; paint.strokeWidth = 2 * d; paint.color = Color.rgb(124, 58, 237)
+                  c.drawRoundRect(r, 14 * d, 14 * d, paint)
+                  paint.style = Paint.Style.FILL; paint.color = Color.WHITE; paint.textSize = 13 * d
+                  c.drawText(text, r.centerX(), r.centerY() + 5 * d, paint)
+              }
+
               override fun onDraw(c: Canvas) {
-                  if (edit) {
-                      c.drawColor(Color.argb(150, 10, 0, 25))
-                      for (a in Config.acts) {
-                          val (fx, fy) = live[a.id] ?: Config.pos(context, a)
-                          val x = fx * width; val y = fy * height
+                  if (!edit) {
+                      if (hasPointerCapture()) {
+                          paint.style = Paint.Style.FILL; paint.color = pink
+                          c.drawCircle(14 * d, 14 * d, 4 * d, paint)
+                      }
+                      return
+                  }
+                  rects.clear()
+                  c.drawColor(Color.argb(150, 10, 0, 25))
+                  val m = minOf(width, height).toFloat()
+
+                  for (b in svc.layout) {
+                      val x = b.x * width
+                      val y = b.y * height
+                      val isSel = b === sel
+                      paint.style = Paint.Style.FILL; paint.color = Color.argb(150, 124, 58, 237)
+                      if (b.type == Config.CAM) {
+                          val ext = b.r * m
+                          paint.style = Paint.Style.STROKE; paint.strokeWidth = (if (isSel) 4 else 2) * d
+                          paint.color = if (isSel) Color.WHITE else pink
+                          c.drawRect(x - ext, y - ext, x + ext, y + ext, paint)
                           paint.style = Paint.Style.FILL; paint.color = Color.argb(190, 124, 58, 237)
                           c.drawCircle(x, y, 30 * d, paint)
-                          paint.style = Paint.Style.STROKE; paint.strokeWidth = 3 * d; paint.color = Color.rgb(244, 63, 154)
-                          c.drawCircle(x, y, 30 * d, paint)
-                          paint.style = Paint.Style.FILL; paint.color = Color.WHITE
-                          paint.textSize = 11 * d; paint.textAlign = Paint.Align.CENTER
-                          c.drawText(a.label, x, y + 4 * d, paint)
+                      } else {
+                          val rad = maxOf(b.r * m, 26 * d)
+                          c.drawCircle(x, y, rad, paint)
+                          paint.style = Paint.Style.STROKE; paint.strokeWidth = (if (isSel) 4 else 2) * d
+                          paint.color = if (isSel) Color.WHITE else pink
+                          c.drawCircle(x, y, rad, paint)
                       }
-                      paint.style = Paint.Style.FILL; paint.color = Color.rgb(244, 63, 154)
-                      c.drawRoundRect(okRect, 20 * d, 20 * d, paint)
-                      paint.color = Color.WHITE; paint.textSize = 16 * d
-                      c.drawText("CONCLUIR", width / 2f, 45 * d, paint)
-                  } else if (hasPointerCapture()) {
-                      paint.style = Paint.Style.FILL; paint.color = Color.rgb(244, 63, 154)
-                      c.drawCircle(14 * d, 14 * d, 4 * d, paint)
+                      paint.style = Paint.Style.FILL; paint.color = Color.WHITE
+                      paint.textSize = 11 * d
+                      c.drawText(b.label, x, y - 2 * d, paint)
+                      paint.textSize = 9 * d; paint.color = Color.rgb(255, 190, 220)
+                      val kn = if (b.type == Config.JOY) b.ks.joinToString("") { Config.keyName(it).take(1) }
+                               else Config.keyName(b.key)
+                      c.drawText(kn, x, y + 11 * d, paint)
+                  }
+
+                  val top = 12 * d
+                  drawBtn(c, "add", "+ Botão", RectF(12 * d, top, 122 * d, top + 44 * d))
+                  drawBtn(c, "prof", "Perfil ${Config.profile(context) + 1}", RectF(130 * d, top, 240 * d, top + 44 * d))
+                  drawBtn(c, "ok", "CONCLUIR", RectF(width - 132 * d, top, width - 12 * d, top + 44 * d))
+
+                  val b = sel
+                  if (b != null) {
+                      val pt = height - 112 * d
+                      paint.style = Paint.Style.FILL; paint.color = Color.argb(235, 18, 3, 31)
+                      c.drawRoundRect(RectF(12 * d, pt, width - 12 * d, height - 8 * d), 16 * d, 16 * d, paint)
+                      paint.color = Color.WHITE; paint.textSize = 13 * d
+                      val info = if (listen == 1) "Aperte a tecla ou botão do mouse para ${b.label}"
+                      else if (listen == 2) "Aperte a tecla de " + arrayOf("CIMA", "ESQUERDA", "BAIXO", "DIREITA")[listenIdx]
+                      else {
+                          val ks = if (b.type == Config.JOY) b.ks.joinToString(" ") { Config.keyName(it) } else Config.keyName(b.key)
+                          "${b.label} · ${Config.typeNames[b.type]} · $ks"
+                      }
+                      c.drawText(info, width / 2f, pt + 26 * d, paint)
+                      val names = arrayOf("key" to "Tecla", "type" to "Tipo", "minus" to "−", "plus" to "+", "del" to "Apagar")
+                      val bw = (width - 24 * d - 16 * d) / 5f
+                      for ((i, p) in names.withIndex()) {
+                          val l = 12 * d + i * (bw + 4 * d)
+                          drawBtn(c, p.first, p.second, RectF(l, pt + 42 * d, l + bw, pt + 94 * d))
+                      }
                   }
               }
 
-              private fun nearest(x: Float, y: Float): String? {
-                  val a = Config.acts.minByOrNull {
-                      val (fx, fy) = live[it.id] ?: Config.pos(context, it)
-                      hypot(fx * width - x, fy * height - y)
-                  } ?: return null
-                  val (fx, fy) = live[a.id] ?: Config.pos(context, a)
-                  return if (hypot(fx * width - x, fy * height - y) < 50 * d) a.id else null
+              private fun near(b: Config.Btn, x: Float, y: Float): Boolean {
+                  val m = minOf(width, height).toFloat()
+                  val rad = if (b.type == Config.CAM) 36 * d else maxOf(b.r * m, 26 * d) + 8 * d
+                  return hypot(b.x * width - x, b.y * height - y) < rad
+              }
+
+              private fun act(id: String) {
+                  val b = sel
+                  when (id) {
+                      "add" -> {
+                          val n = Config.Btn("b" + System.currentTimeMillis(), Config.TAP, "Novo", 0, 0.5f, 0.5f, 0.045f)
+                          svc.layout.add(n); sel = n
+                      }
+                      "prof" -> {
+                          Config.save(context, svc.layout)
+                          Config.setProfile(context, (Config.profile(context) + 1) % 3)
+                          svc.reloadLayout(); sel = null; listen = 0
+                      }
+                      "ok" -> { listen = 0; Config.save(context, svc.layout); svc.setEdit(false) }
+                      "key" -> if (b != null) {
+                          listen = if (b.type == Config.JOY) 2 else 1
+                          listenIdx = 0
+                          setCapture(true)
+                      }
+                      "type" -> if (b != null) b.type = (b.type + 1) % 5
+                      "minus", "plus" -> if (b != null) {
+                          val st = if (b.type == Config.CAM) 0.02f else 0.005f
+                          b.r = (b.r + (if (id == "plus") st else -st)).coerceIn(0.02f, 0.45f)
+                      }
+                      "del" -> if (b != null) { svc.layout.remove(b); sel = null }
+                  }
+                  if (id != "ok" && id != "prof") Config.save(context, svc.layout)
+                  invalidate()
               }
 
               override fun onTouchEvent(e: MotionEvent): Boolean {
                   if (!edit) return false
                   when (e.actionMasked) {
                       MotionEvent.ACTION_DOWN -> {
-                          if (okRect.contains(e.x, e.y)) { svc.setEdit(false); return true }
-                          drag = nearest(e.x, e.y)
+                          val hit = rects.entries.firstOrNull { it.value.contains(e.x, e.y) }?.key
+                          if (hit != null) { act(hit); return true }
+                          val b = svc.layout.lastOrNull { near(it, e.x, e.y) }
+                          sel = b; drag = b
+                          if (b == null) { listen = 0; setCapture(false) }
+                          invalidate()
                       }
                       MotionEvent.ACTION_MOVE -> drag?.let {
-                          live[it] = (e.x / width).coerceIn(0f, 1f) to (e.y / height).coerceIn(0f, 1f); invalidate()
+                          it.x = (e.x / width).coerceIn(0.02f, 0.98f)
+                          it.y = (e.y / height).coerceIn(0.02f, 0.98f)
+                          invalidate()
                       }
                       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                          drag?.let { id -> live[id]?.let { Config.setPos(context, id, it.first, it.second) } }
+                          if (drag != null) Config.save(context, svc.layout)
                           drag = null
                       }
                   }
@@ -522,6 +764,7 @@ jobs:
           import android.os.Bundle
           import android.provider.Settings
           import android.view.Gravity
+          import android.view.KeyEvent
           import android.view.View
           import android.view.ViewGroup.LayoutParams.MATCH_PARENT
           import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -530,6 +773,8 @@ jobs:
           class MainActivity : Activity() {
               private lateinit var bg: ImageView
               private lateinit var status: TextView
+              private lateinit var capBtn: Button
+              private var waitKey = false
               private val wps = intArrayOf(R.drawable.gengar_wp1, R.drawable.gengar_wp2, R.drawable.gengar_wp3, R.drawable.gengar_wp4)
               private val pink = Color.rgb(244, 63, 154)
               private val purple = Color.rgb(124, 58, 237)
@@ -564,29 +809,42 @@ jobs:
                       val s = MapperService.instance
                       if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
                           s.start(); refresh(); moveTaskToBack(true)
-                          toast("Abra o jogo. ESC solta/pega o mouse")
+                          toast("Abra o jogo. A tecla do cursor solta/pega o mouse")
                       }
                   })
-                  col.addView(btn("✎  Editar posições dos botões") {
+                  col.addView(btn("✎  Editar layout dos botões") {
                       val s = MapperService.instance
                       if (s == null) toast("Ative o serviço em Acessibilidade primeiro") else {
                           s.start(); s.setEdit(true); moveTaskToBack(true)
-                          toast("Abra o jogo, arraste os botões e toque CONCLUIR")
+                          toast("Abra o jogo e arraste os botões. Toque num botão para configurar")
                       }
                   })
                   col.addView(btn("■  Parar") { MapperService.instance?.stop(); refresh() })
 
-                  col.addView(label("Sensibilidade do mouse"))
-                  col.addView(SeekBar(this).apply {
-                      max = 27; progress = ((Config.sens(this@MainActivity) * 10) - 3).toInt()
-                      tint(this)
-                      setOnSeekBarChangeListener(sb { Config.setSens(this@MainActivity, (it + 3) / 10f) })
-                  })
+                  capBtn = btn("Tecla do cursor: ${Config.keyName(Config.capKey(this))}") {
+                      waitKey = true; capBtn.text = "Aperte uma tecla do teclado..."
+                  }
+                  col.addView(capBtn)
+
+                  col.addView(label("Sensibilidade horizontal (X)"))
+                  col.addView(seek(27, ((Config.sensX(this) * 10) - 3).toInt()) { Config.setSensX(this, (it + 3) / 10f) })
+                  col.addView(label("Sensibilidade vertical (Y)"))
+                  col.addView(seek(27, ((Config.sensY(this) * 10) - 3).toInt()) { Config.setSensY(this, (it + 3) / 10f) })
                   col.addView(label("Suavização da mira (maior = mais direto, menor = mais estável)"))
-                  col.addView(SeekBar(this).apply {
-                      max = 7; progress = ((Config.smooth(this@MainActivity) * 10) - 3).toInt()
-                      tint(this)
-                      setOnSeekBarChangeListener(sb { Config.setSmooth(this@MainActivity, (it + 3) / 10f) })
+                  col.addView(seek(7, ((Config.smooth(this) * 10) - 3).toInt()) { Config.setSmooth(this, (it + 3) / 10f) })
+
+                  col.addView(label("Perfil de layout"))
+                  val prow = LinearLayout(this)
+                  for (i in 0..2) {
+                      val lp = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { setMargins(dp(4), 0, dp(4), 0) }
+                      prow.addView(btn("Perfil ${i + 1}", lp) {
+                          Config.setProfile(this, i); MapperService.instance?.reloadLayout(); refresh()
+                      })
+                  }
+                  col.addView(prow)
+                  col.addView(btn("Restaurar layout padrão deste perfil") {
+                      Config.save(this, Config.defaults()); MapperService.instance?.reloadLayout()
+                      toast("Layout padrão restaurado")
                   })
 
                   col.addView(label("Wallpaper"))
@@ -598,8 +856,9 @@ jobs:
                   col.addView(row)
 
                   col.addView(TextView(this).apply {
-                      text = "Teclas: WASD move · Espaço pula · C agacha · R recarrega · F interage · 1/2 armas · G granada · H curar · " +
-                              "botão esquerdo atira · direito mira · scroll troca arma · ESC solta o mouse."
+                      text = "Em \"Editar layout\": arraste os botões, toque num botão para mudar tecla, tipo e tamanho, " +
+                              "use + Botão para criar outro e Perfil para trocar de layout. " +
+                              "Joystick usa 4 teclas à sua escolha; Câmera é a área onde o mouse gira a visão."
                       textSize = 12f; setTextColor(Color.LTGRAY); setPadding(0, dp(16), 0, 0)
                   })
 
@@ -608,14 +867,25 @@ jobs:
                   bg.setImageResource(wps[Config.wp(this).coerceIn(0, 3)])
               }
 
+              override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+                  if (waitKey) {
+                      waitKey = false
+                      Config.setCapKey(this, keyCode)
+                      capBtn.text = "Tecla do cursor: ${Config.keyName(keyCode)}"
+                      return true
+                  }
+                  return super.onKeyDown(keyCode, event)
+              }
+
               override fun onResume() { super.onResume(); refresh() }
 
               private fun refresh() {
                   val s = MapperService.instance
+                  val p = "Perfil ${Config.profile(this) + 1}"
                   status.text = when {
                       s == null -> "⚠ Serviço desativado — ative em Acessibilidade"
-                      s.isRunning -> "● Mapeador ATIVO"
-                      else -> "Pronto"
+                      s.isRunning -> "● Mapeador ATIVO · $p"
+                      else -> "Pronto · $p"
                   }
               }
 
@@ -623,14 +893,15 @@ jobs:
               private fun label(t: String) = TextView(this).apply {
                   text = t; textSize = 13f; setTextColor(Color.WHITE); setPadding(0, dp(14), 0, dp(4))
               }
-              private fun tint(s: SeekBar) {
-                  s.progressTintList = ColorStateList.valueOf(pink)
-                  s.thumbTintList = ColorStateList.valueOf(pink)
-              }
-              private fun sb(f: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
-                  override fun onProgressChanged(s: SeekBar, p: Int, u: Boolean) { if (u) f(p) }
-                  override fun onStartTrackingTouch(s: SeekBar) {}
-                  override fun onStopTrackingTouch(s: SeekBar) {}
+              private fun seek(mx: Int, pr: Int, f: (Int) -> Unit) = SeekBar(this).apply {
+                  max = mx; progress = pr
+                  progressTintList = ColorStateList.valueOf(pink)
+                  thumbTintList = ColorStateList.valueOf(pink)
+                  setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(s: SeekBar, p: Int, u: Boolean) { if (u) f(p) }
+                      override fun onStartTrackingTouch(s: SeekBar) {}
+                      override fun onStopTrackingTouch(s: SeekBar) {}
+                  })
               }
               private fun btn(t: String, lp: LinearLayout.LayoutParams? = null, onClick: () -> Unit) = Button(this).apply {
                   text = t; setTextColor(Color.WHITE); isAllCaps = false
